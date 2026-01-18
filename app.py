@@ -18,27 +18,22 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-/* ascunde header/toolbar */
 header[data-testid="stHeader"] { display: none; }
 div[data-testid="stToolbar"] { display: none; }
 
-/* optional: elimina spatiul de sus din containerul principal */
 div[data-testid="stAppViewContainer"] { padding-top: 0rem; }
 
-/* SIDEBAR container */
 section[data-testid="stSidebar"]{
   background: linear-gradient(180deg, rgba(11,16,32,0.95), rgba(15,23,48,0.95)) !important;
   border-right: 1px solid rgba(255,255,255,0.12);
   box-shadow: 8px 0 30px rgba(0,0,0,0.35);
 }
 
-/* AICI e spatiul real in Streamlit 1.53.0 */
 section[data-testid="stSidebar"] [data-testid="stSidebarContent"]{
   padding-top: -1.2rem !important;   /* urca meniul */
   padding-bottom: 0.6rem !important;
 }
 
-/* titluri sidebar */
 section[data-testid="stSidebar"] .sidebar-title{
   color: rgba(255,255,255,0.55);
   font-size: 0.8rem;
@@ -47,7 +42,6 @@ section[data-testid="stSidebar"] .sidebar-title{
   margin: 0.2rem 0 10px 4px !important;
 }
 
-/* butoane */
 section[data-testid="stSidebar"] button{
   width: 100%;
   border-radius: 14px !important;
@@ -71,17 +65,14 @@ section[data-testid="stSidebar"] button:hover{
   box-shadow: 0 0 0 1px rgba(106,166,255,0.25);
 }
 
-/* spacing pe butoane */
 section[data-testid="stSidebar"] .stButton{ margin-bottom: 8px; }
 
-/* text mic */
 section[data-testid="stSidebar"] .small{
   color: rgba(255,255,255,0.6);
   font-size: 0.85rem;
   line-height: 1.4;
 }
 
-/* transparent pe blocuri interne */
 section[data-testid="stSidebar"] [data-testid="stVerticalBlock"]{
   background: transparent !important;
   padding-top: 0 !important;
