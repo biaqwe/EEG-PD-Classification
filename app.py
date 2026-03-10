@@ -86,7 +86,7 @@ RUNS_DIR = APP_DIR / "runs"
 RUNS_DIR.mkdir(parents=True, exist_ok=True)
 
 try:
-    from sklearn.model_selection import train_test_split
+    from sklearn.model_selection import train_test_split, StratifiedGroupKFold, GroupShuffleSplit
     from sklearn.metrics import (
         accuracy_score,
         f1_score,
@@ -97,6 +97,7 @@ try:
     from sklearn.preprocessing import StandardScaler
     from sklearn.pipeline import Pipeline
     from sklearn.svm import SVC
+    from sklearn.feature_selection import SelectKBest, f_classif
     SKLEARN_OK = True
 except Exception:
     SKLEARN_OK = False
@@ -368,6 +369,10 @@ def ss_init():
         st.session_state.last_metrics = {}
     if "last_cm" not in st.session_state:
         st.session_state.last_cm = None
+    if "last_cm_window" not in st.session_state:
+        st.session_state.last_cm_window = None
+    if "last_cm_subject" not in st.session_state:
+        st.session_state.last_cm_subject = None
     if "last_roc" not in st.session_state:
         st.session_state.last_roc = None
     if "last_action" not in st.session_state:
@@ -478,6 +483,8 @@ def get_xy(df: pd.DataFrame):
         return None, None, "Dataset CSV must contain a label column: label/class/y/target."
     ycol = label_candidates[0]
     X = df.drop(columns=[ycol]).copy()
+    drop_meta = [c for c in ["group", "subject_id", "subject_key", "window_start", "recording", "part", "start", "source_file"] if c in X.columns]
+    X = X.drop(columns=drop_meta, errors="ignore")
     y = df[ycol].copy()
     if y.dtype == object:
         y = y.astype(str).str.strip()
@@ -501,15 +508,19 @@ def train_svm(df: pd.DataFrame):
     y = y.loc[X.index]
     if len(X) < 10 or len(np.unique(y)) < 2:
         return None, None, None, None, "Not enough data or only one class present."
-    X_train, X_test, y_train, y_test = train_test_split(
-        X.values, y.values, test_size=0.25, random_state=42, stratify=y.values
-    )
-    clf = Pipeline(
-        [
-            ("scaler", StandardScaler()),
-            ("svm", SVC(kernel="rbf", probability=True, class_weight="balanced", random_state=42)),
-        ]
-    )
+    
+    groups = df.loc[X.index, "subject_key"].astype(str).values
+
+    gss = GroupShuffleSplit(n_splits=1, test_size=0.25, random_state=42)
+    train_idx, test_idx = next(gss.split(X, y, groups))
+
+    X_train, X_test = X.values[train_idx], X.values[test_idx]
+    y_train, y_test = y.values[train_idx], y.values[test_idx]
+    clf = Pipeline([
+        ("scaler", StandardScaler()),
+        ("select", SelectKBest(score_func=f_classif, k=100)),
+        ("svm", SVC(kernel="rbf", probability=True, class_weight="balanced", random_state=42)),
+    ])
     clf.fit(X_train, y_train)
     proba = clf.predict_proba(X_test)[:, 1]
     pred = (proba >= 0.5).astype(int)
@@ -531,6 +542,177 @@ def train_svm(df: pd.DataFrame):
     if auc is not None:
         metrics["auc"] = auc
     return metrics, cm, roc, clf, None
+
+def train_svm_group_cv(df: pd.DataFrame, n_splits: int = 5, random_state: int = 42):
+    if not SKLEARN_OK:
+        return None, None, None, "scikit-learn not available in this environment."
+
+    cols = list(df.columns)
+    label_candidates = [c for c in cols if c.lower() in ["label", "class", "y", "target"]]
+    if not label_candidates:
+        return None, None, None, "Dataset CSV must contain a label column: label/class/y/target."
+
+    if "subject_key" not in df.columns:
+        return None, None, None, "Dataset must contain a subject_key column for group cross-validation."
+
+    ycol = label_candidates[0]
+    X_df = df.drop(columns=[ycol]).copy()
+    y = df[ycol].copy()
+
+    if y.dtype == object:
+        y = y.astype(str).str.strip()
+        y = y.map({"pd": 1, "hc": 0, "1": 1, "0": 0}).fillna(y)
+
+    try:
+        y = y.astype(int)
+    except Exception:
+        uniq = sorted(pd.unique(y))
+        mapping = {v: i for i, v in enumerate(uniq)}
+        y = y.map(mapping).astype(int)
+
+    meta_cols = [c for c in ["group", "subject_id", "subject_key", "window_start", "recording", "part", "start", "source_file"] if c in X_df.columns]
+    groups = df["subject_key"].astype(str).values
+    X_df = X_df.drop(columns=meta_cols, errors="ignore")
+
+    X_df = X_df.replace([np.inf, -np.inf], np.nan).dropna(axis=0)
+    y = y.loc[X_df.index]
+    groups = pd.Series(groups, index=df.index).loc[X_df.index].values
+
+    if len(X_df) < 10 or len(np.unique(y)) < 2:
+        return None, None, None, "Not enough data or only one class present."
+
+    X = X_df.astype(np.float32).values
+    y = y.values
+
+    sgkf = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+
+    def subject_aggregate(df_fold: pd.DataFrame):
+        return df_fold.groupby("subject_key", as_index=False).agg(
+            label=("label", "first"),
+            proba_pd=("proba_pd", "mean"),
+            subject_id=("subject_id", "first") if "subject_id" in df_fold.columns else ("subject_key", "first"),
+        )
+
+    def safe_threshold(y_true, proba):
+        fpr, tpr, thr = roc_curve(y_true, proba)
+        j = tpr - fpr
+        idx = int(np.argmax(j))
+        t = float(thr[idx])
+        if not np.isfinite(t):
+            t = 0.5
+        return t
+
+    def metrics_from_proba(y_true, proba, thr):
+        pred = (proba >= thr).astype(int)
+        acc = float(accuracy_score(y_true, pred))
+        f1 = float(f1_score(y_true, pred))
+        auc = float(roc_auc_score(y_true, proba)) if len(np.unique(y_true)) > 1 else float("nan")
+        cm = confusion_matrix(y_true, pred)
+        return acc, f1, auc, cm
+
+    win_acc, win_f1, win_auc = [], [], []
+    subj_acc, subj_f1, subj_auc = [], [], []
+    win_cms, subj_cms = [], []
+    thresholds = []
+    fold_rows = []
+
+    for fold_idx, (train_idx, test_idx) in enumerate(sgkf.split(X, y, groups=groups), start=1):
+        train_groups = set(groups[train_idx])
+        test_groups = set(groups[test_idx])
+        overlap = train_groups.intersection(test_groups)
+        if overlap:
+            return None, None, None, f"Group leakage detected in fold {fold_idx}."
+
+        X_train, X_test = X[train_idx], X[test_idx]
+        y_train, y_test = y[train_idx], y[test_idx]
+
+        clf = Pipeline([
+            ("scaler", StandardScaler()),
+            ("select", SelectKBest(score_func=f_classif, k=100)),
+            ("svm", SVC(kernel="rbf", probability=True, class_weight="balanced", random_state=random_state)),
+        ])
+        clf.fit(X_train, y_train)
+
+        proba_test = clf.predict_proba(X_test)[:, 1]
+        thr = safe_threshold(y_test, proba_test)
+        thresholds.append(thr)
+
+        acc_w, f1_w, auc_w, cm_w = metrics_from_proba(y_test, proba_test, thr)
+        win_acc.append(acc_w)
+        win_f1.append(f1_w)
+        win_auc.append(auc_w)
+        win_cms.append(cm_w)
+
+        fold_test = df.loc[X_df.index].iloc[test_idx][["subject_key", ycol]].copy()
+        fold_test = fold_test.rename(columns={ycol: "label"})
+        if "subject_id" in df.columns:
+            fold_test["subject_id"] = df.loc[X_df.index].iloc[test_idx]["subject_id"].values
+        else:
+            fold_test["subject_id"] = fold_test["subject_key"]
+        fold_test["proba_pd"] = proba_test
+
+        df_subj = subject_aggregate(fold_test)
+        y_subj = df_subj["label"].astype(int).values
+        proba_subj = df_subj["proba_pd"].astype(float).values
+
+        acc_s, f1_s, auc_s, cm_s = metrics_from_proba(y_subj, proba_subj, thr)
+        subj_acc.append(acc_s)
+        subj_f1.append(f1_s)
+        subj_auc.append(auc_s)
+        subj_cms.append(cm_s)
+
+        fold_rows.append({
+            "fold": fold_idx,
+            "train_subjects": len(train_groups),
+            "test_subjects": len(test_groups),
+            "threshold": thr,
+            "window_acc": acc_w,
+            "window_f1": f1_w,
+            "window_auc": auc_w,
+            "subject_acc": acc_s,
+            "subject_f1": f1_s,
+            "subject_auc": auc_s,
+        })
+
+    def mean_std(a):
+        a = np.array(a, dtype=float)
+        return float(np.nanmean(a)), float(np.nanstd(a))
+
+    w_acc_m, w_acc_s = mean_std(win_acc)
+    w_f1_m, w_f1_s = mean_std(win_f1)
+    w_auc_m, w_auc_s = mean_std(win_auc)
+
+    s_acc_m, s_acc_s = mean_std(subj_acc)
+    s_f1_m, s_f1_s = mean_std(subj_f1)
+    s_auc_m, s_auc_s = mean_std(subj_auc)
+
+    thr_m, thr_s = mean_std(thresholds)
+
+    win_cm_sum = np.sum(np.stack(win_cms, axis=0), axis=0).tolist()
+    subj_cm_sum = np.sum(np.stack(subj_cms, axis=0), axis=0).tolist()
+
+    metrics = {
+        "window_acc_mean": w_acc_m,
+        "window_acc_std": w_acc_s,
+        "window_f1_mean": w_f1_m,
+        "window_f1_std": w_f1_s,
+        "window_auc_mean": w_auc_m,
+        "window_auc_std": w_auc_s,
+        "subject_acc_mean": s_acc_m,
+        "subject_acc_std": s_acc_s,
+        "subject_f1_mean": s_f1_m,
+        "subject_f1_std": s_f1_s,
+        "subject_auc_mean": s_auc_m,
+        "subject_auc_std": s_auc_s,
+        "threshold_mean": thr_m,
+        "threshold_std": thr_s,
+        "n_splits": n_splits,
+        "subjects": int(pd.Series(groups).nunique()),
+        "features": int(X.shape[1]),
+        "fold_details": fold_rows,
+    }
+
+    return metrics, win_cm_sum, subj_cm_sum, None
 
 
 def fake_cnn_result():
@@ -608,6 +790,9 @@ def sidebar_nav():
         if st.button("Train CNN", use_container_width=True):
             run_train_cnn()
 
+    if st.sidebar.button("Run SVM Group CV", use_container_width=True):
+        run_train_svm_group_cv()
+
 
 def run_pipeline():
     if st.session_state.dataset_df is None:
@@ -651,6 +836,39 @@ def run_train_svm():
     log(f"SVM done. Metrics: {metrics}")
     save_run(action="svm", status="Ready", metrics=metrics)
 
+def run_train_svm_group_cv():
+    if st.session_state.dataset_df is None:
+        set_status("Error")
+        log("Cannot run SVM Group CV: dataset not loaded.")
+        save_run(action="svm_group_cv", status="Error", metrics={"error": "dataset not loaded"})
+        return
+
+    set_status("Running")
+    st.session_state.last_action = "svm_group_cv"
+    log("Running SVM Group CV started.")
+
+    metrics, cm_window, cm_subject, err = train_svm_group_cv(st.session_state.dataset_df, n_splits=5, random_state=42)
+
+    if err:
+        set_status("Error")
+        log(f"SVM Group CV failed: {err}")
+        st.session_state.last_metrics = {"error": err}
+        st.session_state.last_cm = None
+        st.session_state.last_cm_window = None
+        st.session_state.last_cm_subject = None
+        st.session_state.last_roc = None
+        save_run(action="svm_group_cv", status="Error", metrics={"error": err})
+        return
+
+    st.session_state.last_metrics = metrics
+    st.session_state.last_cm = cm_subject
+    st.session_state.last_cm_window = cm_window
+    st.session_state.last_cm_subject = cm_subject
+    st.session_state.last_roc = None
+
+    set_status("Ready")
+    log(f"SVM Group CV done. Subject Accuracy mean={metrics.get('subject_acc_mean', 0):.4f}, Subject F1 mean={metrics.get('subject_f1_mean', 0):.4f}")
+    save_run(action="svm_group_cv", status="Ready", metrics=metrics)
 
 def run_train_cnn():
     if st.session_state.dataset_df is None:
@@ -761,13 +979,13 @@ def render_dashboard():
         c1, c2 = st.columns(2)
         with c1:
             if st.button("Train CNN", use_container_width=True, disabled=not ds_ok):
-                run_pipeline()
+                run_train_cnn()
         with c2:
             if st.button("Train SVM", use_container_width=True, disabled=not ds_ok):
                 run_train_svm()
 
         if st.button("Run pipeline", use_container_width=True, disabled=not ds_ok):
-            run_train_cnn()
+            run_pipeline()
 
         st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
 
@@ -1053,17 +1271,44 @@ def render_results():
         if not metrics:
             st.info("No metrics yet. Train a model first.")
         else:
-            mcols = st.columns(3)
-            acc = metrics.get("accuracy", None)
-            f1 = metrics.get("f1", None)
-            auc = metrics.get("auc", None)
+            if st.session_state.last_action == "svm_group_cv":
+                st.markdown("**Subject-level mean performance (Group CV)**")
+                mcols = st.columns(3)
 
-            with mcols[0]:
-                st.metric("Accuracy", "-" if acc is None else f"{acc:.3f}")
-            with mcols[1]:
-                st.metric("F1", "-" if f1 is None else f"{f1:.3f}")
-            with mcols[2]:
-                st.metric("AUC", "-" if auc is None else f"{auc:.3f}")
+                acc = metrics.get("subject_acc_mean", None)
+                f1 = metrics.get("subject_f1_mean", None)
+                auc = metrics.get("subject_auc_mean", None)
+
+                with mcols[0]:
+                    st.metric("Subject Accuracy", "-" if acc is None else f"{acc:.3f}")
+                with mcols[1]:
+                    st.metric("Subject F1", "-" if f1 is None else f"{f1:.3f}")
+                with mcols[2]:
+                    st.metric("Subject AUC", "-" if auc is None else f"{auc:.3f}")
+
+                st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
+
+                st.markdown("**Window-level mean performance (Group CV)**")
+                mcols2 = st.columns(3)
+                with mcols2[0]:
+                    st.metric("Window Accuracy", "-" if metrics.get("window_acc_mean") is None else f"{metrics['window_acc_mean']:.3f}")
+                with mcols2[1]:
+                    st.metric("Window F1", "-" if metrics.get("window_f1_mean") is None else f"{metrics['window_f1_mean']:.3f}")
+                with mcols2[2]:
+                    st.metric("Window AUC", "-" if metrics.get("window_auc_mean") is None else f"{metrics['window_auc_mean']:.3f}")
+
+            else:
+                mcols = st.columns(3)
+                acc = metrics.get("accuracy", None)
+                f1 = metrics.get("f1", None)
+                auc = metrics.get("auc", None)
+
+                with mcols[0]:
+                    st.metric("Accuracy", "-" if acc is None else f"{acc:.3f}")
+                with mcols[1]:
+                    st.metric("F1", "-" if f1 is None else f"{f1:.3f}")
+                with mcols[2]:
+                    st.metric("AUC", "-" if auc is None else f"{auc:.3f}")
 
             if "error" in metrics:
                 st.error(metrics["error"])
@@ -1084,13 +1329,28 @@ def render_results():
 
         st.markdown("<div style='height:5px;'></div>", unsafe_allow_html=True)
 
-        if st.session_state.last_cm is not None:
-            plot_cm(st.session_state.last_cm)
-        else:
-            st.info("Confusion matrix not available yet.")
+        if st.session_state.last_action == "svm_group_cv":
+            if st.session_state.last_cm_subject is not None:
+                st.markdown("**Subject-level confusion matrix**")
+                plot_cm(st.session_state.last_cm_subject, title="Subject-level Confusion Matrix")
+            else:
+                st.info("Subject-level confusion matrix not available yet.")
 
-        if st.session_state.last_roc is not None:
-            plot_roc(st.session_state.last_roc)
+            st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
+
+            if st.session_state.last_cm_window is not None:
+                st.markdown("**Window-level confusion matrix**")
+                plot_cm(st.session_state.last_cm_window, title="Window-level Confusion Matrix")
+            else:
+                st.info("Window-level confusion matrix not available yet.")
+        else:
+            if st.session_state.last_cm is not None:
+                plot_cm(st.session_state.last_cm)
+            else:
+                st.info("Confusion matrix not available yet.")
+
+            if st.session_state.last_roc is not None:
+                plot_roc(st.session_state.last_roc)
 
     with colR:
         st.markdown(
@@ -1145,6 +1405,9 @@ def render_results():
         with c2:
             if st.button("Train CNN", use_container_width=True, disabled=(st.session_state.dataset_df is None)):
                 run_train_cnn()
+
+        if st.button("Run SVM Group CV", use_container_width=True, disabled=(st.session_state.dataset_df is None)):
+            run_train_svm_group_cv()
 
 
 ss_init()
