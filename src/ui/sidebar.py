@@ -1,7 +1,6 @@
 import streamlit as st
 
 from src.actions import (
-    run_pipeline,
     run_train_cnn,
     run_train_svm,
     run_train_svm_group_cv,
@@ -32,14 +31,9 @@ def sidebar_nav():
 
     st.sidebar.markdown("<div class='sidebar-title'>Run</div>", unsafe_allow_html=True)
 
-    colA, colB = st.sidebar.columns(2)
-    with colA:
-        if st.button("Run pipeline", use_container_width=True):
-            run_pipeline()
-    with colB:
-        if st.button("Clear logs", use_container_width=True):
-            st.session_state.logs = []
-            log("Logs cleared.", now_iso)
+    if st.sidebar.button("Clear logs", use_container_width=True):
+        st.session_state.logs = []
+        log("Logs cleared.", now_iso)
 
     st.sidebar.markdown("<div class='sidebar-title'>Models</div>", unsafe_allow_html=True)
 

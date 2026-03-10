@@ -10,7 +10,6 @@ from pathlib import Path
 from scripts.make_features_iowa import build_iowa_features_from_mat
 
 from src.actions import (
-    run_pipeline,
     run_train_cnn,
     run_train_svm,
     run_train_svm_group_cv,
@@ -116,9 +115,6 @@ def render_dashboard():
         with c2:
             if st.button("Train SVM", use_container_width=True, disabled=not ds_ok):
                 run_train_svm()
-
-        if st.button("Run pipeline", use_container_width=True, disabled=not ds_ok):
-            run_pipeline()
 
         st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
 

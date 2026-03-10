@@ -17,21 +17,6 @@ def require_dataset(action_name: str):
     return True
 
 
-def run_pipeline():
-    if not require_dataset("pipeline"):
-        return
-
-    set_status("Running")
-    st.session_state.last_action = "pipeline"
-    log("Pipeline started.", now_iso)
-    time.sleep(0.25)
-    log(f"Preproc config: {st.session_state.preproc}", now_iso)
-    time.sleep(0.25)
-    set_status("Ready")
-    log("Pipeline finished.", now_iso)
-    save_run(action="pipeline", status="Ready", metrics={"note": "preprocessing simulated"})
-
-
 def run_train_svm():
     if not require_dataset("svm"):
         return
@@ -60,6 +45,7 @@ def run_train_svm():
     set_status("Ready")
     log(f"SVM done. Metrics: {metrics}", now_iso)
     save_run(action="svm", status="Ready", metrics=metrics)
+    st.session_state.page = "Results"
 
 
 def run_train_svm_group_cv():
@@ -100,6 +86,7 @@ def run_train_svm_group_cv():
         now_iso
     )
     save_run(action="svm_group_cv", status="Ready", metrics=metrics)
+    st.session_state.page = "Results"
 
 
 def run_train_cnn():
@@ -122,3 +109,4 @@ def run_train_cnn():
     set_status("Ready")
     log(f"CNN done. Metrics: {metrics}", now_iso)
     save_run(action="cnn", status="Ready", metrics=metrics)
+    st.session_state.page = "Results"
