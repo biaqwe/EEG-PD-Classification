@@ -128,7 +128,7 @@ def render_dashboard():
 
         c1, c2 = st.columns(2)
         with c1:
-            if st.button("Train Raw EEG CNN", use_container_width=True, disabled=not raw_ok):
+            if st.button("Train CNN", use_container_width=True, disabled=not raw_ok):
                 run_train_cnn()
         with c2:
             if st.button("Train SVM", use_container_width=True, disabled=not tabular_ok):
@@ -419,7 +419,7 @@ def render_import():
             <div class="subtle">Choose the right import depending on the model</div>
           </div>
           <div class="small" style="margin-top:8px;">
-            - Use <b>Raw EEG import</b> for <b>Train Raw EEG CNN</b><br/>
+            - Use <b>Raw EEG import</b> for <b>Train CNN</b><br/>
             - Use <b>CSV import</b> if you already have a ready tabular dataset for <b>SVM</b><br/>
             - Use <b>Iowa .mat import</b> if you want the app to generate the SVM dataset using the saved preprocessing config
           </div>
@@ -544,7 +544,7 @@ def render_preprocess():
             <div class="card">
               <div class="card-title">
                 <div style="font-weight:800; font-size:1.05rem;">Current config</div>
-                <div class="subtle">Used by Train Raw EEG CNN and by MAT → SVM feature generation</div>
+                <div class="subtle">Used by Train CNN and by MAT → SVM feature generation</div>
               </div>
             </div>
             """,
@@ -568,7 +568,7 @@ def render_preprocess():
                 <div class="subtle">What this page does</div>
               </div>
               <div class="small">
-                - Used by <b>Train Raw EEG CNN</b><br/>
+                - Used by <b>Train CNN</b><br/>
                 - Also used when converting <b>Iowa .mat</b> into a tabular dataset for <b>SVM</b><br/>
                 - Applies optional notch and band-pass filtering<br/>
                 - Segments data into fixed windows<br/>
@@ -589,13 +589,31 @@ def render_preprocess():
             )
 
 
+def get_last_model_display_name():
+    action = st.session_state.last_action
+
+    mapping = {
+        "cnn": "CNN",
+        "svm": "SVM",
+        "svm_group_cv": "SVM Group CV",
+        "cnn_raw_eeg": "CNN",
+    }
+
+    return mapping.get(action, "Unknown model")
+
+
 def render_results():
+    model_name = get_last_model_display_name()
+
     st.markdown(
-        """
+        f"""
         <div class="card">
           <div class="card-title">
-            <div style="font-weight:800; font-size:1.05rem;">Evaluation and model comparison</div>
-            <div class="subtle">Metrics, confusion matrix, ROC/AUC, export</div>
+            <div>
+              <div style="font-weight:800; font-size:1.05rem;">Evaluation and model comparison</div>
+              <div class="subtle">Metrics, confusion matrix, ROC/AUC, export</div>
+            </div>
+            <div class="pill">Model: {model_name}</div>
           </div>
         </div>
         """,
@@ -604,318 +622,329 @@ def render_results():
 
     st.markdown("<div style='height:5px;'></div>", unsafe_allow_html=True)
 
-    colL, colR = st.columns([1.05, 0.95], gap="large")
+    metrics = st.session_state.last_metrics or {}
 
-    with colL:
-        st.markdown(
-            """
-            <div class="card">
-              <div class="card-title">
-                <div style="font-weight:800; font-size:1.05rem;">Metrics</div>
-                <div class="subtle">Last run</div>
-              </div>
+    st.markdown(
+        f"""
+        <div class="card">
+          <div class="card-title">
+            <div>
+              <div style="font-weight:800; font-size:1.05rem;">Metrics</div>
+              <div class="subtle">Last run</div>
             </div>
-            """,
-            unsafe_allow_html=True,
-        )
+            <div class="pill">Model: {model_name}</div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-        st.markdown("<div style='height:5px;'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='height:5px;'></div>", unsafe_allow_html=True)
 
-        metrics = st.session_state.last_metrics or {}
-        if not metrics:
-            st.info("No metrics yet. Train a model first.")
-        else:
-            if st.session_state.last_action == "svm_group_cv":
-                st.markdown("**Subject-level mean performance (Group CV)**")
-                mcols = st.columns(3)
-
-                acc = metrics.get("subject_acc_mean", None)
-                f1 = metrics.get("subject_f1_mean", None)
-                auc = metrics.get("subject_auc_mean", None)
-
-                with mcols[0]:
-                    st.metric("Subject Accuracy", "-" if acc is None else f"{acc:.3f}")
-                with mcols[1]:
-                    st.metric("Subject F1", "-" if f1 is None else f"{f1:.3f}")
-                with mcols[2]:
-                    st.metric("Subject AUC", "-" if auc is None else f"{auc:.3f}")
-            else:
-                mcols = st.columns(3)
-                acc = metrics.get("accuracy", None)
-                f1 = metrics.get("f1", None)
-                auc = metrics.get("auc", None)
-
-                with mcols[0]:
-                    st.metric("Accuracy", "-" if acc is None else f"{acc:.3f}")
-                with mcols[1]:
-                    st.metric("F1", "-" if f1 is None else f"{f1:.3f}")
-                with mcols[2]:
-                    st.metric("AUC", "-" if auc is None else f"{auc:.3f}" if auc is not None else "-")
-
-            if "error" in metrics:
-                st.error(metrics["error"])
-
-            if st.session_state.last_action == "cnn":
-                st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
-                extra_cols = st.columns(4)
-                with extra_cols[0]:
-                    st.metric("Subjects", str(metrics.get("n_subjects", "-")))
-                with extra_cols[1]:
-                    st.metric("Recordings", str(metrics.get("n_recordings", "-")))
-                with extra_cols[2]:
-                    st.metric("Channels", str(metrics.get("n_channels", "-")))
-                with extra_cols[3]:
-                    st.metric("Window samples", str(metrics.get("window_samples", "-")))
-
-        st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
-
-        st.markdown(
-            """
-            <div class="card">
-              <div class="card-title">
-                <div style="font-weight:800; font-size:1.05rem;">Visualizations</div>
-                <div class="subtle">Confusion matrix and ROC</div>
-              </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        st.markdown("<div style='height:5px;'></div>", unsafe_allow_html=True)
-
+    if not metrics:
+        st.info("No metrics yet. Train a model first.")
+    else:
         if st.session_state.last_action == "svm_group_cv":
+            st.markdown("**Subject-level mean performance (Group CV)**")
+            mcols = st.columns(3)
+
+            acc = metrics.get("subject_acc_mean", None)
+            f1 = metrics.get("subject_f1_mean", None)
+            auc = metrics.get("subject_auc_mean", None)
+
+            with mcols[0]:
+                st.metric("Subject Accuracy", "-" if acc is None else f"{acc:.3f}")
+            with mcols[1]:
+                st.metric("Subject F1", "-" if f1 is None else f"{f1:.3f}")
+            with mcols[2]:
+                st.metric("Subject AUC", "-" if auc is None else f"{auc:.3f}")
+        else:
+            mcols = st.columns(3)
+
+            acc = metrics.get("accuracy", None)
+            f1 = metrics.get("f1", None)
+            auc = metrics.get("auc", None)
+
+            with mcols[0]:
+                st.metric("Accuracy", "-" if acc is None else f"{acc:.3f}")
+            with mcols[1]:
+                st.metric("F1", "-" if f1 is None else f"{f1:.3f}")
+            with mcols[2]:
+                st.metric("AUC", "-" if auc is None else f"{auc:.3f}")
+
+        if "error" in metrics:
+            st.error(metrics["error"])
+
+        if st.session_state.last_action == "cnn":
+            st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
+            extra_cols = st.columns(4)
+            with extra_cols[0]:
+                st.metric("Subjects", str(metrics.get("n_subjects", "-")))
+            with extra_cols[1]:
+                st.metric("Recordings", str(metrics.get("n_recordings", "-")))
+            with extra_cols[2]:
+                st.metric("Channels", str(metrics.get("n_channels", "-")))
+            with extra_cols[3]:
+                st.metric("Window samples", str(metrics.get("window_samples", "-")))
+
+    st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
+
+    st.markdown(
+        """
+        <div class="card">
+          <div class="card-title">
+            <div style="font-weight:800; font-size:1.05rem;">Visualizations</div>
+            <div class="subtle">Confusion matrix and ROC</div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown("<div style='height:5px;'></div>", unsafe_allow_html=True)
+
+    if st.session_state.last_action == "svm_group_cv":
+        viz1, viz2 = st.columns(2, gap="large")
+
+        with viz1:
             if st.session_state.last_cm_subject is not None:
                 st.markdown("**Subject-level confusion matrix**")
                 plot_cm(st.session_state.last_cm_subject, title="Subject-level Confusion Matrix")
             else:
                 st.info("Subject-level confusion matrix not available yet.")
 
-            st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
-
+        with viz2:
             if st.session_state.last_cm_window is not None:
                 st.markdown("**Window-level confusion matrix**")
                 plot_cm(st.session_state.last_cm_window, title="Window-level Confusion Matrix")
             else:
                 st.info("Window-level confusion matrix not available yet.")
-        else:
+    else:
+        viz1, viz2 = st.columns(2, gap="large")
+
+        with viz1:
             if st.session_state.last_cm is not None:
                 plot_cm(st.session_state.last_cm)
             else:
                 st.info("Confusion matrix not available yet.")
 
+        with viz2:
             if st.session_state.last_roc is not None:
                 plot_roc(st.session_state.last_roc)
-
-        st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
-
-        st.markdown(
-            """
-            <div class="card">
-              <div class="card-title">
-                <div style="font-weight:800; font-size:1.05rem;">Sample prediction</div>
-                <div class="subtle">Inspect one sample prediction</div>
-              </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        st.markdown("<div style='height:5px;'></div>", unsafe_allow_html=True)
-
-        if st.session_state.last_action == "cnn":
-            pred_df = st.session_state.raw_cnn_predictions
-            if pred_df is None or pred_df.empty:
-                st.info("Sample prediction is available after Train Raw EEG CNN.")
             else:
-                sample_idx = st.number_input(
-                    "Select CNN test sample index",
-                    min_value=0,
-                    max_value=len(pred_df) - 1,
-                    value=0,
-                    step=1,
-                    key="sample_prediction_index_cnn",
-                )
+                st.info("ROC curve not available yet.")
 
-                row = pred_df.iloc[int(sample_idx)]
+    st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
 
-                true_label = "PD" if int(row["true_label"]) == 1 else "HC"
-                pred_label = "PD" if int(row["pred_label"]) == 1 else "HC"
-                confidence = float(max(row["proba_pd"], row["proba_hc"]))
-                correct = int(row["true_label"]) == int(row["pred_label"])
+    st.markdown(
+        """
+        <div class="card">
+          <div class="card-title">
+            <div style="font-weight:800; font-size:1.05rem;">Sample prediction</div>
+            <div class="subtle">Inspect one sample prediction</div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-                info_df = pd.DataFrame([{
-                    "recording": row.get("recording", ""),
-                    "subject_key": row.get("subject_key", ""),
-                    "window_index": int(row.get("window_index", -1)),
-                    "start_sample": int(row.get("start_sample", -1)),
-                    "true_label": true_label,
-                }])
+    st.markdown("<div style='height:5px;'></div>", unsafe_allow_html=True)
 
-                st.dataframe(info_df, use_container_width=True, hide_index=True)
-
-                c1, c2, c3 = st.columns(3)
-                with c1:
-                    st.metric("True label", true_label)
-                with c2:
-                    st.metric("Predicted label", pred_label)
-                with c3:
-                    st.metric("Confidence", f"{confidence:.3f}")
-
-                c4, c5 = st.columns(2)
-                with c4:
-                    st.metric("Probability PD", f"{float(row['proba_pd']):.3f}")
-                with c5:
-                    st.metric("Probability HC", f"{float(row['proba_hc']):.3f}")
-
-                if correct:
-                    st.success("Correct prediction")
-                else:
-                    st.error("Incorrect prediction")
-
-        elif st.session_state.last_action == "svm":
-            df = st.session_state.dataset_df
-            model = st.session_state.last_model
-
-            if df is None or model is None:
-                st.info("Sample prediction is available after Train SVM.")
-            else:
-                try:
-                    label_candidates = [c for c in df.columns if c.lower() in ["label", "class", "y", "target"]]
-                    if not label_candidates:
-                        st.warning("No label column found in dataset.")
-                    else:
-                        ycol = label_candidates[0]
-                        sample_idx = st.number_input(
-                            "Select sample index",
-                            min_value=0,
-                            max_value=len(df) - 1,
-                            value=0,
-                            step=1,
-                            key="sample_prediction_index_svm",
-                        )
-
-                        sample = df.iloc[[sample_idx]].copy()
-                        y_true = sample[ycol].iloc[0]
-
-                        meta_cols = [
-                            c for c in [
-                                "group", "subject_id", "subject_key", "window_start",
-                                "recording", "part", "start", "source_file",
-                            ] if c in sample.columns
-                        ]
-
-                        X_sample = sample.drop(columns=[ycol] + meta_cols, errors="ignore")
-
-                        pred = model.predict(X_sample)[0]
-                        proba = model.predict_proba(X_sample)[0]
-
-                        pred_label = "PD" if int(pred) == 1 else "HC"
-                        true_label = "PD" if int(y_true) == 1 else "HC"
-                        confidence = float(max(proba))
-                        correct = int(pred) == int(y_true)
-
-                        c1, c2, c3 = st.columns(3)
-                        with c1:
-                            st.metric("True label", true_label)
-                        with c2:
-                            st.metric("Predicted label", pred_label)
-                        with c3:
-                            st.metric("Confidence", f"{confidence:.3f}")
-
-                        c4, c5 = st.columns(2)
-                        with c4:
-                            st.metric("Probability PD", f"{proba[1]:.3f}")
-                        with c5:
-                            st.metric("Probability HC", f"{proba[0]:.3f}")
-
-                        if correct:
-                            st.success("Correct prediction")
-                        else:
-                            st.error("Incorrect prediction")
-
-                except Exception as e:
-                    st.error(f"Could not generate sample prediction: {e}")
-
-        elif st.session_state.last_action == "svm_group_cv":
-            pred_df = st.session_state.last_group_cv_predictions
-
-            if pred_df is None or pred_df.empty:
-                st.info("Sample prediction is available after Run SVM Group CV.")
-            else:
-                sample_idx = st.number_input(
-                    "Select sample index",
-                    min_value=0,
-                    max_value=len(pred_df) - 1,
-                    value=0,
-                    step=1,
-                    key="sample_prediction_index_group_cv",
-                )
-
-                row = pred_df.iloc[int(sample_idx)]
-
-                true_label = "PD" if int(row["true_label"]) == 1 else "HC"
-                pred_label = "PD" if int(row["pred_label"]) == 1 else "HC"
-                confidence = float(max(row["proba_pd"], row["proba_hc"]))
-                correct = int(row["true_label"]) == int(row["pred_label"])
-
-                info_df = pd.DataFrame([{
-                    "row_index": int(row["row_index"]),
-                    "fold": int(row["fold"]),
-                    "subject_id": row.get("subject_id", ""),
-                    "subject_key": row.get("subject_key", ""),
-                    "window_start": int(row.get("window_start", -1)),
-                    "true_label": true_label,
-                }])
-
-                st.dataframe(info_df, use_container_width=True, hide_index=True)
-
-                c1, c2, c3 = st.columns(3)
-                with c1:
-                    st.metric("True label", true_label)
-                with c2:
-                    st.metric("Predicted label", pred_label)
-                with c3:
-                    st.metric("Confidence", f"{confidence:.3f}")
-
-                c4, c5 = st.columns(2)
-                with c4:
-                    st.metric("Probability PD", f"{float(row['proba_pd']):.3f}")
-                with c5:
-                    st.metric("Probability HC", f"{float(row['proba_hc']):.3f}")
-
-                if correct:
-                    st.success("Correct prediction")
-                else:
-                    st.error("Incorrect prediction")
+    if st.session_state.last_action == "cnn":
+        pred_df = st.session_state.raw_cnn_predictions
+        if pred_df is None or pred_df.empty:
+            st.info("Sample prediction is available after Train CNN.")
         else:
-            st.info("Train a model first.")
-
-    with colR:
-        st.markdown(
-            """
-            <div class="card">
-              <div class="card-title">
-                <div style="font-weight:800; font-size:1.05rem;">Export and traceability</div>
-                <div class="subtle">Download latest run JSON</div>
-              </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        st.markdown("<div style='height:5px;'></div>", unsafe_allow_html=True)
-
-        runs = load_runs(limit=1)
-        if not runs:
-            st.info("No run record to export yet.")
-        else:
-            last = runs[0]
-            st.json(last, expanded=False)
-            payload = json.dumps(last, ensure_ascii=False, indent=2).encode("utf-8")
-            st.download_button(
-                "Download last run JSON",
-                data=payload,
-                file_name=f"run_{last.get('run_id','latest')}.json",
-                mime="application/json",
-                use_container_width=True,
+            sample_idx = st.number_input(
+                "Select CNN test sample index",
+                min_value=0,
+                max_value=len(pred_df) - 1,
+                value=0,
+                step=1,
+                key="sample_prediction_index_cnn",
             )
+
+            row = pred_df.iloc[int(sample_idx)]
+
+            true_label = "PD" if int(row["true_label"]) == 1 else "HC"
+            pred_label = "PD" if int(row["pred_label"]) == 1 else "HC"
+            confidence = float(max(row["proba_pd"], row["proba_hc"]))
+            correct = int(row["true_label"]) == int(row["pred_label"])
+
+            info_df = pd.DataFrame([{
+                "recording": row.get("recording", ""),
+                "subject_key": row.get("subject_key", ""),
+                "window_index": int(row.get("window_index", -1)),
+                "start_sample": int(row.get("start_sample", -1)),
+                "true_label": true_label,
+            }])
+
+            st.dataframe(info_df, use_container_width=True, hide_index=True)
+
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.metric("True label", true_label)
+            with c2:
+                st.metric("Predicted label", pred_label)
+            with c3:
+                st.metric("Confidence", f"{confidence:.3f}")
+
+            c4, c5 = st.columns(2)
+            with c4:
+                st.metric("Probability PD", f"{float(row['proba_pd']):.3f}")
+            with c5:
+                st.metric("Probability HC", f"{float(row['proba_hc']):.3f}")
+
+            if correct:
+                st.success("Correct prediction")
+            else:
+                st.error("Incorrect prediction")
+
+    elif st.session_state.last_action == "svm":
+        df = st.session_state.dataset_df
+        model = st.session_state.last_model
+
+        if df is None or model is None:
+            st.info("Sample prediction is available after Train SVM.")
+        else:
+            try:
+                label_candidates = [c for c in df.columns if c.lower() in ["label", "class", "y", "target"]]
+                if not label_candidates:
+                    st.warning("No label column found in dataset.")
+                else:
+                    ycol = label_candidates[0]
+                    sample_idx = st.number_input(
+                        "Select sample index",
+                        min_value=0,
+                        max_value=len(df) - 1,
+                        value=0,
+                        step=1,
+                        key="sample_prediction_index_svm",
+                    )
+
+                    sample = df.iloc[[sample_idx]].copy()
+                    y_true = sample[ycol].iloc[0]
+
+                    meta_cols = [
+                        c for c in [
+                            "group", "subject_id", "subject_key", "window_start",
+                            "recording", "part", "start", "source_file",
+                        ] if c in sample.columns
+                    ]
+
+                    X_sample = sample.drop(columns=[ycol] + meta_cols, errors="ignore")
+
+                    pred = model.predict(X_sample)[0]
+                    proba = model.predict_proba(X_sample)[0]
+
+                    pred_label = "PD" if int(pred) == 1 else "HC"
+                    true_label = "PD" if int(y_true) == 1 else "HC"
+                    confidence = float(max(proba))
+                    correct = int(pred) == int(y_true)
+
+                    c1, c2, c3 = st.columns(3)
+                    with c1:
+                        st.metric("True label", true_label)
+                    with c2:
+                        st.metric("Predicted label", pred_label)
+                    with c3:
+                        st.metric("Confidence", f"{confidence:.3f}")
+
+                    c4, c5 = st.columns(2)
+                    with c4:
+                        st.metric("Probability PD", f"{proba[1]:.3f}")
+                    with c5:
+                        st.metric("Probability HC", f"{proba[0]:.3f}")
+
+                    if correct:
+                        st.success("Correct prediction")
+                    else:
+                        st.error("Incorrect prediction")
+
+            except Exception as e:
+                st.error(f"Could not generate sample prediction: {e}")
+
+    elif st.session_state.last_action == "svm_group_cv":
+        pred_df = st.session_state.last_group_cv_predictions
+
+        if pred_df is None or pred_df.empty:
+            st.info("Sample prediction is available after Run SVM Group CV.")
+        else:
+            sample_idx = st.number_input(
+                "Select sample index",
+                min_value=0,
+                max_value=len(pred_df) - 1,
+                value=0,
+                step=1,
+                key="sample_prediction_index_group_cv",
+            )
+
+            row = pred_df.iloc[int(sample_idx)]
+
+            true_label = "PD" if int(row["true_label"]) == 1 else "HC"
+            pred_label = "PD" if int(row["pred_label"]) == 1 else "HC"
+            confidence = float(max(row["proba_pd"], row["proba_hc"]))
+            correct = int(row["true_label"]) == int(row["pred_label"])
+
+            info_df = pd.DataFrame([{
+                "row_index": int(row["row_index"]),
+                "fold": int(row["fold"]),
+                "subject_id": row.get("subject_id", ""),
+                "subject_key": row.get("subject_key", ""),
+                "window_start": int(row.get("window_start", -1)),
+                "true_label": true_label,
+            }])
+
+            st.dataframe(info_df, use_container_width=True, hide_index=True)
+
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.metric("True label", true_label)
+            with c2:
+                st.metric("Predicted label", pred_label)
+            with c3:
+                st.metric("Confidence", f"{confidence:.3f}")
+
+            c4, c5 = st.columns(2)
+            with c4:
+                st.metric("Probability PD", f"{float(row['proba_pd']):.3f}")
+            with c5:
+                st.metric("Probability HC", f"{float(row['proba_hc']):.3f}")
+
+            if correct:
+                st.success("Correct prediction")
+            else:
+                st.error("Incorrect prediction")
+    else:
+        st.info("Train a model first.")
+
+    st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
+
+    st.markdown(
+        """
+        <div class="card">
+          <div class="card-title">
+            <div style="font-weight:800; font-size:1.05rem;">Export and traceability</div>
+            <div class="subtle">Download latest run JSON</div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown("<div style='height:5px;'></div>", unsafe_allow_html=True)
+
+    runs = load_runs(limit=1)
+    if not runs:
+        st.info("No run record to export yet.")
+    else:
+        last = runs[0]
+        st.json(last, expanded=False)
+        payload = json.dumps(last, ensure_ascii=False, indent=2).encode("utf-8")
+        st.download_button(
+            "Download last run JSON",
+            data=payload,
+            file_name=f"run_{last.get('run_id','latest')}.json",
+            mime="application/json",
+            use_container_width=True,
+        )

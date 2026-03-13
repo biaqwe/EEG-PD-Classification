@@ -6,11 +6,6 @@ import numpy as np
 import pandas as pd
 from scipy.signal import butter, filtfilt, iirnotch
 
-
-# =========================================================
-# DEFAULT CONFIG
-# =========================================================
-
 DEFAULT_FS = 1000.0
 DEFAULT_WINDOW = 2000
 DEFAULT_STEP = 2000
@@ -26,10 +21,6 @@ GROUP0_LABEL = 1   # PD
 GROUP1_LABEL = 0   # HC / Control
 
 
-# =========================================================
-# HELPERS FOR MATLAB/HDF5 STRING DECODING
-# =========================================================
-
 def decode_uint16(ds):
     arr = np.array(ds[()]).squeeze()
     return "".join(chr(int(c)) for c in arr if int(c) != 0).strip()
@@ -39,10 +30,6 @@ def decode_strings_list(f, obj):
     refs = np.array(obj[()]).reshape(-1)
     return [decode_uint16(f[r]) for r in refs]
 
-
-# =========================================================
-# DATASET STRUCTURE HELPERS
-# =========================================================
 
 def is_numeric_signal(ds, min_len):
     if not isinstance(ds, h5py.Dataset):
@@ -94,10 +81,6 @@ def find_valid_channels(f, eeg_refs, n_groups, n_subj, min_len):
 
     return valid, invalid_info
 
-
-# =========================================================
-# SIGNAL PROCESSING
-# =========================================================
 
 def bandpass_filter(
     x,
@@ -167,10 +150,6 @@ def preprocess_signal(
     return y.astype(np.float32)
 
 
-# =========================================================
-# FEATURE EXTRACTION
-# =========================================================
-
 def zero_crossing_rate(x):
     x = np.asarray(x, dtype=np.float32)
     if x.size < 2:
@@ -191,10 +170,6 @@ def features_1d(x):
         "zcr": float(zero_crossing_rate(x)),
     }
 
-
-# =========================================================
-# SUBJECT MATRIX
-# =========================================================
 
 def get_subject_matrix(
     f,
@@ -239,10 +214,6 @@ def get_subject_matrix(
     return X
 
 
-# =========================================================
-# CORE BUILD FUNCTION
-# =========================================================
-
 def build_iowa_features_from_mat(
     mat_path,
     fs=DEFAULT_FS,
@@ -258,13 +229,6 @@ def build_iowa_features_from_mat(
     filter_order=DEFAULT_FILTER_ORDER,
     verbose=True,
 ):
-    """
-    Main reusable function.
-    Input: path to Iowa .mat file
-    Output:
-      - df: feature dataframe
-      - summary: dict with metadata
-    """
     mat_path = Path(mat_path)
     if not mat_path.exists():
         raise FileNotFoundError(f"Input file not found: {mat_path}")
@@ -423,10 +387,6 @@ def save_iowa_features_csv(df, output_csv):
     df.to_csv(output_csv, index=False)
     return output_csv
 
-
-# =========================================================
-# CLI
-# =========================================================
 
 def main():
     parser = argparse.ArgumentParser()

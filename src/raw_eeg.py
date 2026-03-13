@@ -83,11 +83,6 @@ def build_brainvision_payload(uploaded_files):
 
 
 def _rewrite_brainvision_links(file_path: Path):
-    """
-    Rescrie referințele interne din fișierele BrainVision astfel încât
-    .vhdr și .vmrk să pointeze către fișierele locale din folderul temporar,
-    folosind același stem.
-    """
     ext = file_path.suffix.lower()
     stem = file_path.stem
 
@@ -110,19 +105,13 @@ def _rewrite_brainvision_links(file_path: Path):
 
 
 def materialize_brainvision_payload(payloads: dict):
-    """
-    Scrie fișierele uploadate într-un folder temporar și repară legăturile
-    interne dintre .vhdr / .vmrk / .eeg.
-    """
     tmpdir = tempfile.TemporaryDirectory()
     root = Path(tmpdir.name)
 
-    # scrie toate fișierele local
     for filename, data in payloads.items():
         out_path = root / Path(filename).name
         out_path.write_bytes(data)
 
-    # rescrie linkurile interne din .vhdr și .vmrk
     for file_path in root.iterdir():
         if file_path.suffix.lower() in [".vhdr", ".vmrk"]:
             _rewrite_brainvision_links(file_path)
@@ -232,7 +221,7 @@ def load_brainvision_windows(
     if not X_list:
         return None, None, None, None, None, "Could not generate windows from the uploaded BrainVision files."
 
-    X = np.stack(X_list, axis=0)  # [N, C, T]
+    X = np.stack(X_list, axis=0)
     y = np.array(y_list, dtype=np.int64)
     groups = np.array(groups)
     meta_df = pd.DataFrame(rows)

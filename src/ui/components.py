@@ -96,7 +96,7 @@ def plot_cm(cm, title="Confusion Matrix"):
         return
 
     arr = np.array(cm, dtype=float)
-    fig = plt.figure()
+    fig = plt.figure(figsize=(5.2, 4.0))
     plt.imshow(arr, interpolation="nearest")
     plt.title(title)
     plt.xlabel("Predicted")
@@ -116,7 +116,7 @@ def plot_roc(roc):
     fpr = np.array(roc["fpr"], dtype=float)
     tpr = np.array(roc["tpr"], dtype=float)
 
-    fig = plt.figure()
+    fig = plt.figure(figsize=(5.2, 4.0))
     plt.plot(fpr, tpr)
     plt.plot([0, 1], [0, 1], linestyle="--")
     plt.xlabel("False Positive Rate")

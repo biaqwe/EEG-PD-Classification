@@ -42,7 +42,7 @@ def sidebar_nav():
         if st.button("Train SVM", use_container_width=True):
             run_train_svm()
     with colD:
-        if st.button("Train Raw EEG CNN", use_container_width=True):
+        if st.button("Train CNN", use_container_width=True):
             run_train_cnn()
 
     if st.sidebar.button("Run SVM Group CV", use_container_width=True):

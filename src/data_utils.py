@@ -31,10 +31,6 @@ def parse_csv(uploaded) -> Optional[pd.DataFrame]:
 
 
 def parse_iowa_mat(uploaded, preprocessing_summary=None):
-    """
-    Transformă un fișier Iowa .mat într-un DataFrame tabular pentru SVM,
-    folosind setările salvate în pagina Preprocess.
-    """
     cfg = preprocessing_summary or {}
 
     fs = 1000.0

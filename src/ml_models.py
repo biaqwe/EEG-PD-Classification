@@ -428,7 +428,6 @@ def train_raw_eeg_cnn(payloads: dict, config: dict | None = None):
 
     X_train, X_val, X_test = _normalize_by_train(X_train, X_val, X_test)
 
-    # [N, C, T] -> [N, 1, C, T]
     X_train = X_train[:, None, :, :]
     X_val = X_val[:, None, :, :]
     X_test = X_test[:, None, :, :]
