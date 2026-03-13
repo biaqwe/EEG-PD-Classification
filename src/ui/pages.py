@@ -1,11 +1,10 @@
 import json
+import tempfile
+from pathlib import Path
 from dataclasses import asdict
 
 import pandas as pd
 import streamlit as st
-
-import tempfile
-from pathlib import Path
 
 from scripts.make_features_iowa import build_iowa_features_from_mat
 
@@ -43,12 +42,12 @@ def render_dashboard():
                 <div class="kpi">
                   <div class="lbl">Dataset</div>
                   <div class="val">""" + (st.session_state.dataset_name or "Not loaded") + """</div>
-                  <div class="hint">Import from CSV (label required)</div>
+                  <div class="hint">Import from CSV or generate from .mat</div>
                 </div>
                 <div class="kpi">
                   <div class="lbl">Rows</div>
                   <div class="val">""" + (str(n_rows) if n_rows is not None else "-") + """</div>
-                  <div class="hint">Samples/epochs/records</div>
+                  <div class="hint">Samples / windows / records</div>
                 </div>
                 <div class="kpi">
                   <div class="lbl">Channels/Features</div>
@@ -116,6 +115,9 @@ def render_dashboard():
             if st.button("Train SVM", use_container_width=True, disabled=not ds_ok):
                 run_train_svm()
 
+        if st.button("Run SVM Group CV", use_container_width=True, disabled=not ds_ok):
+            run_train_svm_group_cv()
+
         st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
 
         st.markdown(
@@ -170,6 +172,7 @@ def render_import():
             else:
                 st.session_state.dataset_df = df
                 st.session_state.dataset_name = ds_name.strip() or getattr(uploaded, "name", "dataset.csv")
+                st.session_state.last_group_cv_predictions = None
                 set_status("Ready")
                 log(f"Dataset loaded: {st.session_state.dataset_name} (shape={df.shape})", now_iso)
                 save_run(action="import", status="Ready", metrics={"shape": list(df.shape)})
@@ -313,6 +316,7 @@ def render_preprocess():
                     f"Bandpass enabled: {summary.get('use_bandpass')}",
                     f"Notch enabled: {summary.get('use_notch')}",
                 ]
+                st.session_state.last_group_cv_predictions = None
 
                 save_run(
                     action="preprocessing_from_mat",
@@ -431,6 +435,7 @@ def render_preprocess():
                 f"<div class='logbox'>{logs_text.replace('<','&lt;').replace('>','&gt;')}</div>",
                 unsafe_allow_html=True
             )
+
 
 def render_results():
     st.markdown(
@@ -557,6 +562,165 @@ def render_results():
 
             if st.session_state.last_roc is not None:
                 plot_roc(st.session_state.last_roc)
+
+        st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
+
+        st.markdown(
+            """
+            <div class="card">
+              <div class="card-title">
+                <div style="font-weight:800; font-size:1.05rem;">Sample prediction</div>
+                <div class="subtle">Inspect one sample prediction</div>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        st.markdown("<div style='height:5px;'></div>", unsafe_allow_html=True)
+
+        df = st.session_state.dataset_df
+
+        if df is None:
+            st.info("No dataset loaded.")
+
+        elif st.session_state.last_action == "svm":
+            model = st.session_state.last_model
+
+            if model is None:
+                st.info("Sample prediction is available after Train SVM.")
+            else:
+                try:
+                    label_candidates = [c for c in df.columns if c.lower() in ["label", "class", "y", "target"]]
+                    if not label_candidates:
+                        st.warning("No label column found in dataset.")
+                    else:
+                        ycol = label_candidates[0]
+
+                        if len(df) == 0:
+                            st.info("Dataset is empty.")
+                        else:
+                            sample_idx = st.number_input(
+                                "Select sample index",
+                                min_value=0,
+                                max_value=len(df) - 1,
+                                value=0,
+                                step=1,
+                                key="sample_prediction_index_svm",
+                            )
+
+                            sample = df.iloc[[sample_idx]].copy()
+                            y_true = sample[ycol].iloc[0]
+
+                            meta_cols = [
+                                c for c in [
+                                    "group",
+                                    "subject_id",
+                                    "subject_key",
+                                    "window_start",
+                                    "recording",
+                                    "part",
+                                    "start",
+                                    "source_file",
+                                ]
+                                if c in sample.columns
+                            ]
+
+                            X_sample = sample.drop(columns=[ycol] + meta_cols, errors="ignore")
+
+                            pred = model.predict(X_sample)[0]
+                            proba = model.predict_proba(X_sample)[0]
+
+                            info_cols = [c for c in ["subject_id", "subject_key", "window_start", ycol] if c in sample.columns]
+                            if info_cols:
+                                st.dataframe(sample[info_cols], use_container_width=True, hide_index=True)
+
+                            with st.expander("Show sample features"):
+                                st.dataframe(sample, use_container_width=True, hide_index=True)
+
+                            pred_label = "PD" if int(pred) == 1 else "HC"
+                            true_label = "PD" if int(y_true) == 1 else "HC"
+                            confidence = float(max(proba))
+                            correct = int(pred) == int(y_true)
+
+                            c1, c2, c3, c4, c5 = st.columns(5)
+                            with c1:
+                                st.metric("True label", true_label)
+                            with c2:
+                                st.metric("Predicted label", pred_label)
+                            with c3:
+                                st.metric("Confidence", f"{confidence:.3f}")
+                            with c4:
+                                st.metric("Probability PD", f"{proba[1]:.3f}")
+                            with c5:
+                                st.metric("Probability HC", f"{proba[0]:.3f}")
+
+                            if correct:
+                                st.success("Correct prediction")
+                            else:
+                                st.error("Incorrect prediction")
+
+                except Exception as e:
+                    st.error(f"Could not generate sample prediction: {e}")
+
+        elif st.session_state.last_action == "svm_group_cv":
+            pred_df = st.session_state.last_group_cv_predictions
+
+            if pred_df is None or pred_df.empty:
+                st.info("Sample prediction is available after Run SVM Group CV.")
+            else:
+                try:
+                    sample_idx = st.number_input(
+                        "Select sample index",
+                        min_value=0,
+                        max_value=len(pred_df) - 1,
+                        value=0,
+                        step=1,
+                        key="sample_prediction_index_group_cv",
+                    )
+
+                    row = pred_df.iloc[int(sample_idx)]
+
+                    true_label = "PD" if int(row["true_label"]) == 1 else "HC"
+                    pred_label = "PD" if int(row["pred_label"]) == 1 else "HC"
+                    confidence = float(max(row["proba_pd"], row["proba_hc"]))
+                    correct = int(row["true_label"]) == int(row["pred_label"])
+
+                    info_df = pd.DataFrame([{
+                        "row_index": int(row["row_index"]),
+                        "fold": int(row["fold"]),
+                        "subject_id": row.get("subject_id", ""),
+                        "subject_key": row.get("subject_key", ""),
+                        "window_start": int(row.get("window_start", -1)),
+                        "true_label": true_label,
+                    }])
+
+                    st.dataframe(info_df, use_container_width=True, hide_index=True)
+
+                    c1, c2, c3, c4, c5 = st.columns(5)
+                    with c1:
+                        st.metric("True label", true_label)
+                    with c2:
+                        st.metric("Predicted label", pred_label)
+                    with c3:
+                        st.metric("Confidence", f"{confidence:.3f}")
+                    with c4:
+                        st.metric("Probability PD", f"{float(row['proba_pd']):.3f}")
+                    with c5:
+                        st.metric("Probability HC", f"{float(row['proba_hc']):.3f}")
+
+                    st.caption(f"Out-of-fold prediction from fold {int(row['fold'])}")
+
+                    if correct:
+                        st.success("Correct prediction")
+                    else:
+                        st.error("Incorrect prediction")
+
+                except Exception as e:
+                    st.error(f"Could not generate Group CV sample prediction: {e}")
+
+        else:
+            st.info("Sample prediction is available after Train SVM or Run SVM Group CV.")
 
     with colR:
         st.markdown(

@@ -32,19 +32,27 @@ def run_train_svm():
         log(f"SVM failed: {err}", now_iso)
         st.session_state.last_metrics = {"error": err}
         st.session_state.last_cm = None
+        st.session_state.last_cm_window = None
+        st.session_state.last_cm_subject = None
         st.session_state.last_roc = None
+        st.session_state.last_model = None
+        st.session_state.last_group_cv_predictions = None
         save_run(action="svm", status="Error", metrics={"error": err})
         return
 
+    st.session_state.last_model = model
+    st.session_state.last_group_cv_predictions = None
+
     st.session_state.last_metrics = metrics
     st.session_state.last_cm = cm
-    st.session_state.last_roc = roc
     st.session_state.last_cm_window = None
     st.session_state.last_cm_subject = None
+    st.session_state.last_roc = roc
 
     set_status("Ready")
     log(f"SVM done. Metrics: {metrics}", now_iso)
     save_run(action="svm", status="Ready", metrics=metrics)
+
     st.session_state.page = "Results"
 
 
@@ -56,7 +64,7 @@ def run_train_svm_group_cv():
     st.session_state.last_action = "svm_group_cv"
     log("Running SVM Group CV started.", now_iso)
 
-    metrics, cm_window, cm_subject, err = train_svm_group_cv(
+    metrics, cm_window, cm_subject, sample_predictions_df, err = train_svm_group_cv(
         st.session_state.dataset_df,
         n_splits=5,
         random_state=42
@@ -70,6 +78,8 @@ def run_train_svm_group_cv():
         st.session_state.last_cm_window = None
         st.session_state.last_cm_subject = None
         st.session_state.last_roc = None
+        st.session_state.last_model = None
+        st.session_state.last_group_cv_predictions = None
         save_run(action="svm_group_cv", status="Error", metrics={"error": err})
         return
 
@@ -78,6 +88,9 @@ def run_train_svm_group_cv():
     st.session_state.last_cm_window = cm_window
     st.session_state.last_cm_subject = cm_subject
     st.session_state.last_roc = None
+    st.session_state.last_model = None
+    st.session_state.last_group_cv_predictions = sample_predictions_df
+    st.session_state.last_action = "svm_group_cv"
 
     set_status("Ready")
     log(
@@ -86,6 +99,7 @@ def run_train_svm_group_cv():
         now_iso
     )
     save_run(action="svm_group_cv", status="Ready", metrics=metrics)
+
     st.session_state.page = "Results"
 
 

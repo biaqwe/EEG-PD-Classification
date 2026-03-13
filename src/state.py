@@ -39,6 +39,8 @@ def init_session_state():
         "last_action": None,
         "preprocessing_summary": None,
         "preprocessing_logs": [],
+        "last_model": None,
+        "last_group_cv_predictions": None,
     }
 
     for key, value in defaults.items():

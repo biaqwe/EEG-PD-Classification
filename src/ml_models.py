@@ -23,10 +23,10 @@ except Exception:
     SKLEARN_OK = False
 
 
-def build_svm_pipeline(random_state=RANDOM_STATE):
+def build_svm_pipeline(k_best=100, random_state=RANDOM_STATE):
     return Pipeline([
         ("scaler", StandardScaler()),
-        ("select", SelectKBest(score_func=f_classif, k=K_BEST)),
+        ("select", SelectKBest(score_func=f_classif, k=k_best)),
         ("svm", SVC(
             kernel="rbf",
             probability=True,
@@ -127,15 +127,15 @@ def metrics_from_proba(y_true, proba, thr):
 
 def train_svm_group_cv(df: pd.DataFrame, n_splits: int = N_SPLITS, random_state: int = RANDOM_STATE):
     if not SKLEARN_OK:
-        return None, None, None, "scikit-learn not available in this environment."
+        return None, None, None, None, "scikit-learn not available in this environment."
 
     cols = list(df.columns)
     label_candidates = [c for c in cols if c.lower() in ["label", "class", "y", "target"]]
     if not label_candidates:
-        return None, None, None, "Dataset CSV must contain a label column: label/class/y/target."
+        return None, None, None, None, "Dataset CSV must contain a label column: label/class/y/target."
 
     if "subject_key" not in df.columns:
-        return None, None, None, "Dataset must contain a subject_key column for group cross-validation."
+        return None, None, None, None, "Dataset must contain a subject_key column for group cross-validation."
 
     ycol = label_candidates[0]
     X_df = df.drop(columns=[ycol]).copy()
@@ -167,7 +167,7 @@ def train_svm_group_cv(df: pd.DataFrame, n_splits: int = N_SPLITS, random_state:
     groups = pd.Series(groups, index=df.index).loc[X_df.index].values
 
     if len(X_df) < 10 or len(np.unique(y)) < 2:
-        return None, None, None, "Not enough data or only one class present."
+        return None, None, None, None, "Not enough data or only one class present."
 
     X = X_df.astype(np.float32).values
     y = y.values
@@ -179,23 +179,58 @@ def train_svm_group_cv(df: pd.DataFrame, n_splits: int = N_SPLITS, random_state:
     win_cms, subj_cms = [], []
     thresholds = []
     fold_rows = []
+    sample_prediction_rows = []
+
+    def subject_aggregate(df_fold: pd.DataFrame):
+        if "subject_id" in df_fold.columns:
+            return df_fold.groupby("subject_key", as_index=False).agg(
+                label=("label", "first"),
+                proba_pd=("proba_pd", "mean"),
+                subject_id=("subject_id", "first"),
+            )
+
+        return df_fold.groupby("subject_key", as_index=False).agg(
+            label=("label", "first"),
+            proba_pd=("proba_pd", "mean"),
+            subject_id=("subject_key", "first"),
+        )
+
+    def safe_threshold(y_true, proba):
+        fpr, tpr, thr = roc_curve(y_true, proba)
+        j = tpr - fpr
+        idx = int(np.argmax(j))
+        t = float(thr[idx])
+        if not np.isfinite(t):
+            t = 0.5
+        return t
+
+    def metrics_from_proba(y_true, proba, thr):
+        pred = (proba >= thr).astype(int)
+        acc = float(accuracy_score(y_true, pred))
+        f1 = float(f1_score(y_true, pred))
+        auc = float(roc_auc_score(y_true, proba)) if len(np.unique(y_true)) > 1 else float("nan")
+        cm = confusion_matrix(y_true, pred)
+        return acc, f1, auc, cm
 
     for fold_idx, (train_idx, test_idx) in enumerate(sgkf.split(X, y, groups=groups), start=1):
         train_groups = set(groups[train_idx])
         test_groups = set(groups[test_idx])
         overlap = train_groups.intersection(test_groups)
         if overlap:
-            return None, None, None, f"Group leakage detected in fold {fold_idx}."
+            return None, None, None, None, f"Group leakage detected in fold {fold_idx}."
 
         X_train, X_test = X[train_idx], X[test_idx]
         y_train, y_test = y[train_idx], y[test_idx]
 
-        clf = build_svm_pipeline(random_state=random_state)
+        k_best = min(K_BEST, X_train.shape[1])
+        clf = build_svm_pipeline(k_best=k_best, random_state=random_state)
         clf.fit(X_train, y_train)
 
         proba_test = clf.predict_proba(X_test)[:, 1]
         thr = safe_threshold(y_test, proba_test)
         thresholds.append(thr)
+
+        pred_test = (proba_test >= thr).astype(int)
 
         acc_w, f1_w, auc_w, cm_w = metrics_from_proba(y_test, proba_test, thr)
         win_acc.append(acc_w)
@@ -222,6 +257,23 @@ def train_svm_group_cv(df: pd.DataFrame, n_splits: int = N_SPLITS, random_state:
         subj_f1.append(f1_s)
         subj_auc.append(auc_s)
         subj_cms.append(cm_s)
+
+        test_original_rows = df.loc[X_df.index].iloc[test_idx].copy()
+
+        for local_i in range(len(test_idx)):
+            row_info = {
+                "row_index": int(test_original_rows.index[local_i]),
+                "fold": int(fold_idx),
+                "subject_key": str(test_original_rows.iloc[local_i]["subject_key"]) if "subject_key" in test_original_rows.columns else "",
+                "subject_id": str(test_original_rows.iloc[local_i]["subject_id"]) if "subject_id" in test_original_rows.columns else "",
+                "window_start": int(test_original_rows.iloc[local_i]["window_start"]) if "window_start" in test_original_rows.columns else -1,
+                "true_label": int(y_test[local_i]),
+                "pred_label": int(pred_test[local_i]),
+                "proba_pd": float(proba_test[local_i]),
+                "proba_hc": float(1.0 - proba_test[local_i]),
+                "threshold": float(thr),
+            }
+            sample_prediction_rows.append(row_info)
 
         fold_rows.append({
             "fold": fold_idx,
@@ -253,6 +305,12 @@ def train_svm_group_cv(df: pd.DataFrame, n_splits: int = N_SPLITS, random_state:
     win_cm_sum = np.sum(np.stack(win_cms, axis=0), axis=0).tolist()
     subj_cm_sum = np.sum(np.stack(subj_cms, axis=0), axis=0).tolist()
 
+    sample_predictions_df = (
+        pd.DataFrame(sample_prediction_rows)
+        .sort_values("row_index")
+        .reset_index(drop=True)
+    )
+
     metrics = {
         "window_acc_mean": w_acc_m,
         "window_acc_std": w_acc_s,
@@ -274,8 +332,7 @@ def train_svm_group_cv(df: pd.DataFrame, n_splits: int = N_SPLITS, random_state:
         "fold_details": fold_rows,
     }
 
-    return metrics, win_cm_sum, subj_cm_sum, None
-
+    return metrics, win_cm_sum, subj_cm_sum, sample_predictions_df, None
 
 def fake_cnn_result():
     rng = np.random.default_rng(42)
