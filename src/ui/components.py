@@ -58,8 +58,16 @@ def status_dot():
 
 def render_topbar():
     df = st.session_state.dataset_df
-    n_rows, n_channels = dataset_summary(df)
     ds_name = st.session_state.dataset_name or "No dataset"
+
+    if df is not None:
+        n_rows, n_channels = dataset_summary(df)
+    elif st.session_state.raw_dataset_summary is not None:
+        summary = st.session_state.raw_dataset_summary
+        n_rows = summary.get("n_recordings", "-")
+        n_channels = summary.get("n_channels", "-")
+    else:
+        n_rows, n_channels = None, None
 
     st.markdown(
         f"""
@@ -71,7 +79,7 @@ def render_topbar():
             </div>
             <div style="margin-top:10px; display:flex; gap:10px; flex-wrap:wrap;">
               <span class="pill">Dataset: <b style="color:var(--txt)">{ds_name}</b></span>
-              <span class="pill">Rows: <b style="color:var(--txt)">{n_rows if n_rows is not None else "-"}</b></span>
+              <span class="pill">Rows/Recordings: <b style="color:var(--txt)">{n_rows if n_rows is not None else "-"}</b></span>
               <span class="pill">Channels/Features: <b style="color:var(--txt)">{n_channels if n_channels is not None else "-"}</b></span>
               <span class="pill">Status: {status_badge()}</span>
             </div>

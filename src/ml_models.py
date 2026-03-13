@@ -1,8 +1,31 @@
+import copy
+
 import numpy as np
 import pandas as pd
 
-from src.config import K_BEST, N_SPLITS, RANDOM_STATE, TEST_SIZE
+from src.config import (
+    K_BEST,
+    N_SPLITS,
+    RANDOM_STATE,
+    TEST_SIZE,
+    RAW_WINDOW_SEC,
+    RAW_STEP_SEC,
+    RAW_MAX_WINDOWS_PER_RECORDING,
+    RAW_L_FREQ,
+    RAW_H_FREQ,
+    RAW_NOTCH_FREQ,
+    RAW_USE_BANDPASS,
+    RAW_USE_NOTCH,
+    RAW_VAL_SIZE,
+    CNN_EPOCHS,
+    CNN_BATCH_SIZE,
+    CNN_LR,
+    CNN_WEIGHT_DECAY,
+    CNN_DROPOUT,
+    CNN_PATIENCE,
+)
 from src.data_utils import get_xy
+from src.raw_eeg import load_brainvision_windows
 
 try:
     from sklearn.model_selection import GroupShuffleSplit, StratifiedGroupKFold
@@ -21,6 +44,15 @@ try:
     SKLEARN_OK = True
 except Exception:
     SKLEARN_OK = False
+
+try:
+    import torch
+    import torch.nn as nn
+    from torch.utils.data import DataLoader, TensorDataset
+
+    TORCH_OK = True
+except Exception:
+    TORCH_OK = False
 
 
 def build_svm_pipeline(k_best=100, random_state=RANDOM_STATE):
@@ -76,11 +108,7 @@ def train_svm(df: pd.DataFrame):
     try:
         auc = float(roc_auc_score(y_test, proba))
         fpr, tpr, thr = roc_curve(y_test, proba)
-        roc = {
-            "fpr": fpr.tolist(),
-            "tpr": tpr.tolist(),
-            "thr": thr.tolist(),
-        }
+        roc = {"fpr": fpr.tolist(), "tpr": tpr.tolist(), "thr": thr.tolist()}
     except Exception:
         pass
 
@@ -180,37 +208,6 @@ def train_svm_group_cv(df: pd.DataFrame, n_splits: int = N_SPLITS, random_state:
     thresholds = []
     fold_rows = []
     sample_prediction_rows = []
-
-    def subject_aggregate(df_fold: pd.DataFrame):
-        if "subject_id" in df_fold.columns:
-            return df_fold.groupby("subject_key", as_index=False).agg(
-                label=("label", "first"),
-                proba_pd=("proba_pd", "mean"),
-                subject_id=("subject_id", "first"),
-            )
-
-        return df_fold.groupby("subject_key", as_index=False).agg(
-            label=("label", "first"),
-            proba_pd=("proba_pd", "mean"),
-            subject_id=("subject_key", "first"),
-        )
-
-    def safe_threshold(y_true, proba):
-        fpr, tpr, thr = roc_curve(y_true, proba)
-        j = tpr - fpr
-        idx = int(np.argmax(j))
-        t = float(thr[idx])
-        if not np.isfinite(t):
-            t = 0.5
-        return t
-
-    def metrics_from_proba(y_true, proba, thr):
-        pred = (proba >= thr).astype(int)
-        acc = float(accuracy_score(y_true, pred))
-        f1 = float(f1_score(y_true, pred))
-        auc = float(roc_auc_score(y_true, proba)) if len(np.unique(y_true)) > 1 else float("nan")
-        cm = confusion_matrix(y_true, pred)
-        return acc, f1, auc, cm
 
     for fold_idx, (train_idx, test_idx) in enumerate(sgkf.split(X, y, groups=groups), start=1):
         train_groups = set(groups[train_idx])
@@ -334,22 +331,216 @@ def train_svm_group_cv(df: pd.DataFrame, n_splits: int = N_SPLITS, random_state:
 
     return metrics, win_cm_sum, subj_cm_sum, sample_predictions_df, None
 
-def fake_cnn_result():
-    rng = np.random.default_rng(42)
 
-    acc = float(np.clip(rng.normal(0.82, 0.05), 0.60, 0.95))
-    f1 = float(np.clip(rng.normal(0.80, 0.06), 0.55, 0.95))
-    auc = float(np.clip(rng.normal(0.86, 0.05), 0.60, 0.98))
+class EEGNetLite(nn.Module):
+    def __init__(self, n_channels: int, n_samples: int, dropout: float = 0.25):
+        super().__init__()
 
-    cm = [
-        [int(rng.integers(18, 30)), int(rng.integers(2, 10))],
-        [int(rng.integers(3, 12)), int(rng.integers(16, 30))]
-    ]
+        self.block1 = nn.Sequential(
+            nn.Conv2d(1, 8, kernel_size=(1, 64), padding=(0, 32), bias=False),
+            nn.BatchNorm2d(8),
 
-    roc = {
-        "fpr": [0.0, 0.08, 0.18, 0.35, 1.0],
-        "tpr": [0.0, 0.55, 0.72, 0.87, 1.0],
-        "thr": [1.2, 0.75, 0.52, 0.28, 0.0]
+            nn.Conv2d(8, 16, kernel_size=(n_channels, 1), groups=8, bias=False),
+            nn.BatchNorm2d(16),
+            nn.ELU(),
+            nn.AvgPool2d(kernel_size=(1, 4)),
+            nn.Dropout(dropout),
+        )
+
+        self.block2 = nn.Sequential(
+            nn.Conv2d(16, 16, kernel_size=(1, 16), padding=(0, 8), groups=16, bias=False),
+            nn.Conv2d(16, 16, kernel_size=(1, 1), bias=False),
+            nn.BatchNorm2d(16),
+            nn.ELU(),
+            nn.AvgPool2d(kernel_size=(1, 8)),
+            nn.Dropout(dropout),
+            nn.AdaptiveAvgPool2d((1, 8)),
+        )
+
+        self.classifier = nn.Linear(16 * 1 * 8, 1)
+
+    def forward(self, x):
+        x = self.block1(x)
+        x = self.block2(x)
+        x = torch.flatten(x, 1)
+        x = self.classifier(x)
+        return x.squeeze(1)
+
+
+def _normalize_by_train(X_train, X_val, X_test):
+    mean = X_train.mean(axis=(0, 2), keepdims=True)
+    std = X_train.std(axis=(0, 2), keepdims=True)
+    std[std < 1e-8] = 1.0
+
+    X_train = (X_train - mean) / std
+    X_val = (X_val - mean) / std
+    X_test = (X_test - mean) / std
+    return X_train, X_val, X_test
+
+
+def train_raw_eeg_cnn(payloads: dict, config: dict | None = None):
+    if not SKLEARN_OK:
+        return None, None, None, None, None, "scikit-learn not available in this environment."
+
+    if not TORCH_OK:
+        return None, None, None, None, None, "PyTorch is not available in this environment."
+
+    cfg = config or {}
+    window_sec = float(cfg.get("window_sec", RAW_WINDOW_SEC))
+    step_sec = float(cfg.get("step_sec", RAW_STEP_SEC))
+    max_windows = int(cfg.get("max_windows_per_recording", RAW_MAX_WINDOWS_PER_RECORDING))
+    use_bandpass = bool(cfg.get("use_bandpass", RAW_USE_BANDPASS))
+    l_freq = float(cfg.get("bandpass_low", RAW_L_FREQ))
+    h_freq = float(cfg.get("bandpass_high", RAW_H_FREQ))
+    use_notch = bool(cfg.get("use_notch", RAW_USE_NOTCH))
+    notch_freq = float(cfg.get("notch_freq", RAW_NOTCH_FREQ))
+
+    X, y, groups, meta_df, summary, err = load_brainvision_windows(
+        payloads=payloads,
+        window_sec=window_sec,
+        step_sec=step_sec,
+        max_windows_per_recording=max_windows,
+        use_bandpass=use_bandpass,
+        l_freq=l_freq,
+        h_freq=h_freq,
+        use_notch=use_notch,
+        notch_freq=notch_freq,
+    )
+    if err:
+        return None, None, None, None, None, err
+
+    if len(np.unique(y)) < 2:
+        return None, None, None, None, None, "Need both classes (HC and PD) in the uploaded recordings."
+
+    gss_test = GroupShuffleSplit(n_splits=1, test_size=TEST_SIZE, random_state=RANDOM_STATE)
+    trainval_idx, test_idx = next(gss_test.split(X, y, groups))
+
+    X_trainval, X_test = X[trainval_idx], X[test_idx]
+    y_trainval, y_test = y[trainval_idx], y[test_idx]
+    groups_trainval = groups[trainval_idx]
+
+    val_fraction = RAW_VAL_SIZE
+    gss_val = GroupShuffleSplit(n_splits=1, test_size=val_fraction, random_state=RANDOM_STATE)
+    train_idx_local, val_idx_local = next(gss_val.split(X_trainval, y_trainval, groups_trainval))
+
+    X_train, X_val = X_trainval[train_idx_local], X_trainval[val_idx_local]
+    y_train, y_val = y_trainval[train_idx_local], y_trainval[val_idx_local]
+
+    X_train, X_val, X_test = _normalize_by_train(X_train, X_val, X_test)
+
+    # [N, C, T] -> [N, 1, C, T]
+    X_train = X_train[:, None, :, :]
+    X_val = X_val[:, None, :, :]
+    X_test = X_test[:, None, :, :]
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    torch.manual_seed(RANDOM_STATE)
+    np.random.seed(RANDOM_STATE)
+
+    model = EEGNetLite(
+        n_channels=X_train.shape[2],
+        n_samples=X_train.shape[3],
+        dropout=CNN_DROPOUT,
+    ).to(device)
+
+    pos_count = max(1, int((y_train == 1).sum()))
+    neg_count = max(1, int((y_train == 0).sum()))
+    pos_weight = torch.tensor([neg_count / pos_count], dtype=torch.float32, device=device)
+
+    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=CNN_LR,
+        weight_decay=CNN_WEIGHT_DECAY,
+    )
+
+    train_loader = DataLoader(
+        TensorDataset(
+            torch.tensor(X_train, dtype=torch.float32),
+            torch.tensor(y_train, dtype=torch.float32),
+        ),
+        batch_size=CNN_BATCH_SIZE,
+        shuffle=True,
+    )
+
+    val_x = torch.tensor(X_val, dtype=torch.float32).to(device)
+    val_y = torch.tensor(y_val, dtype=torch.float32).to(device)
+
+    best_state = None
+    best_val_loss = float("inf")
+    patience_left = CNN_PATIENCE
+
+    for _ in range(CNN_EPOCHS):
+        model.train()
+        for xb, yb in train_loader:
+            xb = xb.to(device)
+            yb = yb.to(device)
+
+            optimizer.zero_grad()
+            logits = model(xb)
+            loss = criterion(logits, yb)
+            loss.backward()
+            optimizer.step()
+
+        model.eval()
+        with torch.no_grad():
+            val_logits = model(val_x)
+            val_loss = float(criterion(val_logits, val_y).item())
+
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            best_state = copy.deepcopy(model.state_dict())
+            patience_left = CNN_PATIENCE
+        else:
+            patience_left -= 1
+            if patience_left <= 0:
+                break
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
+
+    model.eval()
+    with torch.no_grad():
+        test_x = torch.tensor(X_test, dtype=torch.float32).to(device)
+        logits = model(test_x)
+        proba = torch.sigmoid(logits).cpu().numpy()
+
+    pred = (proba >= 0.5).astype(int)
+
+    acc = float(accuracy_score(y_test, pred))
+    f1 = float(f1_score(y_test, pred))
+    cm = confusion_matrix(y_test, pred).tolist()
+
+    auc = None
+    roc = None
+    try:
+        auc = float(roc_auc_score(y_test, proba))
+        fpr, tpr, thr = roc_curve(y_test, proba)
+        roc = {"fpr": fpr.tolist(), "tpr": tpr.tolist(), "thr": thr.tolist()}
+    except Exception:
+        pass
+
+    test_meta = meta_df.iloc[test_idx].copy().reset_index(drop=True)
+    test_meta["true_label"] = y_test.astype(int)
+    test_meta["pred_label"] = pred.astype(int)
+    test_meta["proba_pd"] = proba.astype(float)
+    test_meta["proba_hc"] = (1.0 - proba).astype(float)
+
+    metrics = {
+        "accuracy": acc,
+        "f1": f1,
+        "auc": auc,
+        "n_windows_total": int(summary["n_windows"]),
+        "n_windows_train": int(len(X_train)),
+        "n_windows_val": int(len(X_val)),
+        "n_windows_test": int(len(X_test)),
+        "n_subjects": int(summary["n_subjects"]),
+        "n_recordings": int(summary["n_recordings"]),
+        "n_channels": int(summary["n_channels"]),
+        "window_samples": int(summary["window_samples"]),
+        "sampling_rate": float(summary["sampling_rate"]) if summary["sampling_rate"] is not None else None,
+        "model": "EEGNetLite",
     }
 
-    return {"accuracy": acc, "f1": f1, "auc": auc}, cm, roc
+    return metrics, cm, roc, model, test_meta, None

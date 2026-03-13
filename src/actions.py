@@ -1,14 +1,12 @@
-import time
-
 import streamlit as st
 
-from src.ml_models import train_svm, train_svm_group_cv, fake_cnn_result
+from src.ml_models import train_svm, train_svm_group_cv, train_raw_eeg_cnn
 from src.state import set_status, log
 from src.storage import save_run
 from src.utils import now_iso
 
 
-def require_dataset(action_name: str):
+def require_tabular_dataset(action_name: str):
     if st.session_state.dataset_df is None:
         set_status("Error")
         log(f"Cannot run {action_name}: dataset not loaded.", now_iso)
@@ -17,8 +15,17 @@ def require_dataset(action_name: str):
     return True
 
 
+def require_raw_eeg(action_name: str):
+    if not st.session_state.raw_file_payloads:
+        set_status("Error")
+        log(f"Cannot run {action_name}: raw BrainVision files not loaded.", now_iso)
+        save_run(action=action_name, status="Error", metrics={"error": "raw BrainVision files not loaded"})
+        return False
+    return True
+
+
 def run_train_svm():
-    if not require_dataset("svm"):
+    if not require_tabular_dataset("svm"):
         return
 
     set_status("Running")
@@ -42,6 +49,7 @@ def run_train_svm():
 
     st.session_state.last_model = model
     st.session_state.last_group_cv_predictions = None
+    st.session_state.raw_cnn_predictions = None
 
     st.session_state.last_metrics = metrics
     st.session_state.last_cm = cm
@@ -57,7 +65,7 @@ def run_train_svm():
 
 
 def run_train_svm_group_cv():
-    if not require_dataset("svm_group_cv"):
+    if not require_tabular_dataset("svm_group_cv"):
         return
 
     set_status("Running")
@@ -90,6 +98,7 @@ def run_train_svm_group_cv():
     st.session_state.last_roc = None
     st.session_state.last_model = None
     st.session_state.last_group_cv_predictions = sample_predictions_df
+    st.session_state.raw_cnn_predictions = None
     st.session_state.last_action = "svm_group_cv"
 
     set_status("Ready")
@@ -104,15 +113,34 @@ def run_train_svm_group_cv():
 
 
 def run_train_cnn():
-    if not require_dataset("cnn"):
+    if not require_raw_eeg("cnn_raw_eeg"):
         return
 
     set_status("Running")
     st.session_state.last_action = "cnn"
-    log("Training CNN started (demo mode).", now_iso)
-    time.sleep(0.35)
+    log("Training raw EEG CNN started.", now_iso)
 
-    metrics, cm, roc = fake_cnn_result()
+    metrics, cm, roc, model, pred_df, err = train_raw_eeg_cnn(
+        payloads=st.session_state.raw_file_payloads,
+        config=st.session_state.preprocessing_summary,
+    )
+
+    if err:
+        set_status("Error")
+        log(f"Raw EEG CNN failed: {err}", now_iso)
+        st.session_state.last_metrics = {"error": err}
+        st.session_state.last_cm = None
+        st.session_state.last_cm_window = None
+        st.session_state.last_cm_subject = None
+        st.session_state.last_roc = None
+        st.session_state.last_model = None
+        st.session_state.raw_cnn_predictions = None
+        save_run(action="cnn_raw_eeg", status="Error", metrics={"error": err})
+        return
+
+    st.session_state.last_model = model
+    st.session_state.last_group_cv_predictions = None
+    st.session_state.raw_cnn_predictions = pred_df
 
     st.session_state.last_metrics = metrics
     st.session_state.last_cm = cm
@@ -121,6 +149,6 @@ def run_train_cnn():
     st.session_state.last_roc = roc
 
     set_status("Ready")
-    log(f"CNN done. Metrics: {metrics}", now_iso)
-    save_run(action="cnn", status="Ready", metrics=metrics)
+    log(f"Raw EEG CNN done. Metrics: {metrics}", now_iso)
+    save_run(action="cnn_raw_eeg", status="Ready", metrics=metrics)
     st.session_state.page = "Results"
