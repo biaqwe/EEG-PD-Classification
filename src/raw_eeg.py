@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 
-def infer_label_from_name(name: str):
+def infer_label_from_name(name: str): # tries to guess class label from filename
     s = name.lower()
 
     if "control" in s or "_hc" in s or "-hc" in s or s.startswith("hc"):
@@ -18,7 +18,7 @@ def infer_label_from_name(name: str):
     return None
 
 
-def subject_key_from_name(name: str):
+def subject_key_from_name(name: str): # extracts subject id from filename
     stem = Path(name).stem
     m = re.search(r"([A-Za-z]+)(\d+)", stem)
     if m:
@@ -26,12 +26,12 @@ def subject_key_from_name(name: str):
     return stem.lower()
 
 
-def build_brainvision_payload(uploaded_files):
+def build_brainvision_payload(uploaded_files): # processes uploaded raw eeg files
     if not uploaded_files:
         return None, None, "No files uploaded."
 
-    payloads = {}
-    grouped = {}
+    payloads = {} # for file data
+    grouped = {} # for files belonging to the same recording
 
     for f in uploaded_files:
         name = Path(f.name).name
@@ -53,7 +53,7 @@ def build_brainvision_payload(uploaded_files):
         has_vhdr = ".vhdr" in exts
         has_eeg = ".eeg" in exts
         has_vmrk = ".vmrk" in exts
-        complete = has_vhdr and has_eeg and has_vmrk
+        complete = has_vhdr and has_eeg and has_vmrk # checks if recording is complete
 
         label = infer_label_from_name(stem)
         subject_key = subject_key_from_name(stem)
@@ -61,17 +61,17 @@ def build_brainvision_payload(uploaded_files):
         if complete:
             valid_recordings += 1
 
-        rows.append({
-            "recording": stem,
-            "subject_key": subject_key,
-            "label_guess": label,
-            "has_vhdr": has_vhdr,
-            "has_eeg": has_eeg,
-            "has_vmrk": has_vmrk,
-            "complete_triplet": complete,
+        rows.append({ # recording info
+            "recording": stem, # recording name
+            "subject_key": subject_key, # subject if
+            "label_guess": label, # guessed class from filename
+            "has_vhdr": has_vhdr, # header present
+            "has_eeg": has_eeg, # sig present
+            "has_vmrk": has_vmrk, # marker present
+            "complete_triplet": complete, # all files present
         })
 
-    manifest_df = pd.DataFrame(rows)
+    manifest_df = pd.DataFrame(rows) # rows to dataframe
 
     if manifest_df.empty:
         return None, None, "No valid BrainVision files found."
@@ -82,7 +82,7 @@ def build_brainvision_payload(uploaded_files):
     return payloads, manifest_df, None
 
 
-def _rewrite_brainvision_links(file_path: Path):
+def _rewrite_brainvision_links(file_path: Path): # rewrites eeg and marker file refs
     ext = file_path.suffix.lower()
     stem = file_path.stem
 
@@ -94,24 +94,27 @@ def _rewrite_brainvision_links(file_path: Path):
 
     new_lines = []
     for line in lines:
-        if line.startswith("DataFile="):
-            new_lines.append(f"DataFile={stem}.eeg")
-        elif line.startswith("MarkerFile="):
-            new_lines.append(f"MarkerFile={stem}.vmrk")
+        if line.startswith("DataFile="): # if a line defines eeg file
+            new_lines.append(f"DataFile={stem}.eeg") # rewrites it so header points to correct eeg file
+        elif line.startswith("MarkerFile="): # if a line defines marker file
+            new_lines.append(f"MarkerFile={stem}.vmrk") # rewrites it so header points to correct marker file
         else:
             new_lines.append(line)
 
     file_path.write_text("\n".join(new_lines), encoding="utf-8")
 
 
-def materialize_brainvision_payload(payloads: dict):
+def materialize_brainvision_payload(payloads: dict): # writes uploaded files to temp folder and fixes links
+    # creates a temp folder on system
     tmpdir = tempfile.TemporaryDirectory()
     root = Path(tmpdir.name)
 
+    # writes uploaded files in temp folder
     for filename, data in payloads.items():
         out_path = root / Path(filename).name
         out_path.write_bytes(data)
 
+    # fixes links for all files in temp folder
     for file_path in root.iterdir():
         if file_path.suffix.lower() in [".vhdr", ".vmrk"]:
             _rewrite_brainvision_links(file_path)
@@ -120,7 +123,7 @@ def materialize_brainvision_payload(payloads: dict):
     return tmpdir, vhdr_paths
 
 
-def load_brainvision_windows(
+def load_brainvision_windows( # prepares raw eeg windows for cnn training
     payloads: dict,
     window_sec: float,
     step_sec: float,
@@ -138,14 +141,14 @@ def load_brainvision_windows(
 
     tmpdir, vhdr_paths = materialize_brainvision_payload(payloads)
 
-    X_list = []
-    y_list = []
-    groups = []
-    rows = []
-    channels_count = None
-    sfreq_ref = None
+    X_list = [] # eeg windows
+    y_list = [] # window labels
+    groups = [] # subject ids
+    rows = [] # metadata rows
+    channels_count = None # expected nr of channels
+    sfreq_ref = None # sampling freq ref
 
-    try:
+    try: # makes sure temp folder is deleted at the end
         for vhdr_path in vhdr_paths:
             stem = vhdr_path.stem
             label = infer_label_from_name(stem)
@@ -155,24 +158,24 @@ def load_brainvision_windows(
 
             subject_key = subject_key_from_name(stem)
 
-            try:
-                raw = mne.io.read_raw_brainvision(vhdr_path, preload=True, verbose="ERROR")
+            try: # loads eeg recording
+                raw = mne.io.read_raw_brainvision(vhdr_path, preload=True, verbose="ERROR") # preload means sig data is loaded into memory immediately
             except Exception as e:
                 return None, None, None, None, None, f"Failed to read {vhdr_path.name}: {e}"
 
-            raw.pick("eeg")
+            raw.pick("eeg") # keeps only eeg sigs
 
             if len(raw.ch_names) == 0:
                 continue
 
-            if use_bandpass:
+            if use_bandpass: # applies bandpass if enabled
                 raw.filter(l_freq=l_freq, h_freq=h_freq, verbose="ERROR")
 
-            if use_notch and notch_freq > 0:
+            if use_notch and notch_freq > 0: # applies notch if enabled
                 raw.notch_filter(freqs=[notch_freq], verbose="ERROR")
 
-            data = raw.get_data().astype(np.float32)
-            sfreq = float(raw.info["sfreq"])
+            data = raw.get_data().astype(np.float32) # extracts eeg data as numpy array
+            sfreq = float(raw.info["sfreq"]) # reads sampling freq
 
             if sfreq_ref is None:
                 sfreq_ref = sfreq
@@ -183,19 +186,23 @@ def load_brainvision_windows(
             if data.shape[0] != channels_count:
                 continue
 
+            # converts window aand step from seconds to sampmles
             win_samples = int(window_sec * sfreq)
             step_samples = int(step_sec * sfreq)
 
             if win_samples <= 0 or step_samples <= 0:
                 continue
 
+            # calculates where each window should start in sig
             total = data.shape[1]
             starts = list(range(0, max(0, total - win_samples + 1), step_samples))
 
+            # only max nr of windows per recording are kept
             if max_windows_per_recording is not None and len(starts) > max_windows_per_recording:
                 starts = starts[:max_windows_per_recording]
 
             for i, start in enumerate(starts):
+                # slices one eeg sig from all channels
                 end = start + win_samples
                 window = data[:, start:end]
 
@@ -206,6 +213,7 @@ def load_brainvision_windows(
                 y_list.append(label)
                 groups.append(subject_key)
 
+                # stores window metadata
                 rows.append({
                     "recording": stem,
                     "subject_key": subject_key,
@@ -216,16 +224,18 @@ def load_brainvision_windows(
                 })
 
     finally:
-        tmpdir.cleanup()
+        tmpdir.cleanup() # deletes temp folder
 
     if not X_list:
         return None, None, None, None, None, "Could not generate windows from the uploaded BrainVision files."
 
+    # builds arrays and metadata table
     X = np.stack(X_list, axis=0)
     y = np.array(y_list, dtype=np.int64)
     groups = np.array(groups)
     meta_df = pd.DataFrame(rows)
 
+    # dataset summary
     summary = {
         "n_windows": int(X.shape[0]),
         "n_recordings": int(meta_df["recording"].nunique()),

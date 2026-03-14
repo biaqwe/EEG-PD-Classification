@@ -27,10 +27,12 @@ from src.utils import now_iso
 
 
 def render_dashboard():
+    # checks what data is loaded in the app
     df = st.session_state.dataset_df
     raw_ok = st.session_state.raw_file_payloads is not None
     tabular_ok = df is not None
 
+    # calculates nr of rows and feats for .csv files
     csv_rows = "-"
     csv_features = "-"
     if df is not None:
@@ -38,12 +40,14 @@ def render_dashboard():
         csv_rows = str(n_rows)
         csv_features = str(n_features)
 
+    # calculates nr of recordings and subjects for raw eeg files
     raw_recordings = "-"
     raw_subjects = "-"
     if st.session_state.raw_dataset_summary is not None:
         raw_recordings = str(st.session_state.raw_dataset_summary.get("n_recordings", "-"))
         raw_subjects = str(st.session_state.raw_dataset_summary.get("n_subjects", "-"))
 
+    # splits dashboard in 2 cols
     left, right = st.columns([1.25, 0.75], gap="large")
 
     with left:
@@ -102,11 +106,13 @@ def render_dashboard():
 
         st.markdown("<div style='height:5px;'></div>", unsafe_allow_html=True)
 
+        # loads last 8 runs
         runs = load_runs(limit=8)
         if runs:
             df_runs = pd.DataFrame(runs)
             cols = ["timestamp", "action", "status", "dataset_name"]
             cols = [c for c in cols if c in df_runs.columns]
+            # displays runs as table
             st.dataframe(df_runs[cols], use_container_width=True, hide_index=True)
         else:
             st.info("No runs saved yet.")
@@ -127,6 +133,7 @@ def render_dashboard():
         st.markdown("<div style='height:5px;'></div>", unsafe_allow_html=True)
 
         c1, c2 = st.columns(2)
+        # quick action buttons
         with c1:
             if st.button("Train CNN", use_container_width=True, disabled=not raw_ok):
                 run_train_cnn()
@@ -153,6 +160,7 @@ def render_dashboard():
 
         st.markdown("<div style='height:5px;'></div>", unsafe_allow_html=True)
 
+        # collects last 200 logs
         logs_text = "\n".join(st.session_state.logs[-200:]) if st.session_state.logs else "No logs yet."
         st.markdown(
             f"<div class='logbox'>{logs_text.replace('<','&lt;').replace('>','&gt;')}</div>",
@@ -177,6 +185,7 @@ def render_import():
 
     col_left, col_right = st.columns(2, gap="large")
 
+    # checks if raw eeg data was uploaded and calculates nr of recordings, subjects and complete triplets (complete triplets means .eeg .vhdr .vmrk for the same subject)
     with col_left:
         current_raw_manifest_df = st.session_state.raw_manifest_df
         raw_loaded = current_raw_manifest_df is not None
@@ -204,6 +213,7 @@ def render_import():
 
         st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
 
+        # for file upload
         uploaded_raw_files = st.file_uploader(
             "Upload BrainVision files",
             type=["vhdr", "eeg", "vmrk"],
@@ -214,7 +224,7 @@ def render_import():
 
         raw_name = st.text_input(
             "Raw EEG dataset name",
-            value="brainvision_raw_eeg",
+            value="raw_eeg",
             key="raw_dataset_name_input",
         )
 
@@ -225,7 +235,7 @@ def render_import():
             use_container_width=True,
             disabled=not uploaded_raw_files,
             key="load_raw_eeg_btn",
-        ):
+        ): #uploaded files are analyzed
             payloads, manifest_df, err = build_brainvision_payload(uploaded_raw_files)
 
             if err:
@@ -261,6 +271,7 @@ def render_import():
                 st.success("Raw EEG dataset loaded successfully.")
                 st.rerun()
 
+        # data preview
         if st.session_state.raw_manifest_df is not None:
             st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
 
@@ -274,6 +285,7 @@ def render_import():
                 st.warning("Some recordings are incomplete and will not be usable.")
                 st.dataframe(incomplete_df, use_container_width=True, hide_index=True)
 
+    # checks if svm data was uploaded and calculates nr of rows and feats
     with col_right:
         current_svm_df = st.session_state.dataset_df
         svm_loaded = current_svm_df is not None
@@ -301,6 +313,7 @@ def render_import():
 
         st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
 
+        # for .csv upload
         uploaded_csv = st.file_uploader(
             "Upload CSV dataset",
             type=["csv"],
@@ -309,6 +322,7 @@ def render_import():
             help="Ready-made tabular dataset for SVM.",
         )
 
+        # for .mat upload
         uploaded_mat = st.file_uploader(
             "Upload Iowa .mat dataset",
             type=["mat"],
@@ -319,7 +333,7 @@ def render_import():
 
         svm_name = st.text_input(
             "SVM dataset name",
-            value=st.session_state.dataset_name or "dataset_tabular",
+            value=st.session_state.dataset_name or "eeg_csv",
             key="csv_dataset_name_input",
         )
 
@@ -330,7 +344,7 @@ def render_import():
             use_container_width=True,
             disabled=not can_load_svm,
             key="load_svm_btn",
-        ):
+        ): # uploaded files are analyzed
             try:
                 if uploaded_csv is not None and uploaded_mat is not None:
                     st.error("Please upload only one source at a time: either CSV or MAT.")
@@ -340,7 +354,7 @@ def render_import():
                         raise ValueError("Could not parse CSV file.")
 
                     st.session_state.dataset_df = df
-                    st.session_state.dataset_name = svm_name.strip() or "dataset_tabular"
+                    st.session_state.dataset_name = svm_name.strip() or "eeg_csv"
                     st.session_state.last_group_cv_predictions = None
 
                     n_rows, n_features = dataset_summary(df)
@@ -399,6 +413,7 @@ def render_import():
                 log(f"SVM dataset import failed: {e}", now_iso)
                 st.error(f"Could not load SVM dataset: {e}")
 
+        # data preview
         if st.session_state.dataset_df is not None:
             st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
 
@@ -446,6 +461,7 @@ def render_preprocess():
 
     left, right = st.columns([1.0, 1.0], gap="large")
 
+    # loads default config
     default_cfg = st.session_state.preprocessing_summary or {
         "window_sec": float(RAW_WINDOW_SEC),
         "step_sec": float(RAW_STEP_SEC),
@@ -513,6 +529,7 @@ def render_preprocess():
             bandpass_low = float(default_cfg["bandpass_low"])
             bandpass_high = float(default_cfg["bandpass_high"])
 
+        # saves current config settings
         if st.button("Save preprocessing config", use_container_width=True):
             st.session_state.preprocessing_summary = {
                 "window_sec": float(window_sec),
@@ -553,6 +570,7 @@ def render_preprocess():
 
         st.markdown("<div style='height:5px;'></div>", unsafe_allow_html=True)
 
+        # shows saved config
         if st.session_state.preprocessing_summary is None:
             st.info("No preprocessing config saved yet.")
         else:
@@ -580,6 +598,7 @@ def render_preprocess():
             unsafe_allow_html=True,
         )
 
+        # shows preprocessing logs if any
         if st.session_state.preprocessing_logs:
             st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
             logs_text = "\n".join(st.session_state.preprocessing_logs)
@@ -589,7 +608,7 @@ def render_preprocess():
             )
 
 
-def get_last_model_display_name():
+def get_last_model_display_name(): # returns the name of the last trained model
     action = st.session_state.last_action
 
     mapping = {
@@ -622,6 +641,7 @@ def render_results():
 
     st.markdown("<div style='height:5px;'></div>", unsafe_allow_html=True)
 
+    # gets the metrics from last train
     metrics = st.session_state.last_metrics or {}
 
     st.markdown(
@@ -644,6 +664,7 @@ def render_results():
     if not metrics:
         st.info("No metrics yet. Train a model first.")
     else:
+        # svm group cv metrics
         if st.session_state.last_action == "svm_group_cv":
             st.markdown("**Subject-level mean performance (Group CV)**")
             mcols = st.columns(3)
@@ -659,6 +680,7 @@ def render_results():
             with mcols[2]:
                 st.metric("Subject AUC", "-" if auc is None else f"{auc:.3f}")
         else:
+            # cnn and svm common metrivcs
             mcols = st.columns(3)
 
             acc = metrics.get("accuracy", None)
@@ -675,6 +697,7 @@ def render_results():
         if "error" in metrics:
             st.error(metrics["error"])
 
+        # extra info for cnn
         if st.session_state.last_action == "cnn":
             st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
             extra_cols = st.columns(4)
@@ -703,6 +726,7 @@ def render_results():
 
     st.markdown("<div style='height:5px;'></div>", unsafe_allow_html=True)
 
+    # two cms for group cv, one subject level and one window level
     if st.session_state.last_action == "svm_group_cv":
         viz1, viz2 = st.columns(2, gap="large")
 
@@ -719,6 +743,7 @@ def render_results():
                 plot_cm(st.session_state.last_cm_window, title="Window-level Confusion Matrix")
             else:
                 st.info("Window-level confusion matrix not available yet.")
+    # cm and roc for cnn and svm
     else:
         viz1, viz2 = st.columns(2, gap="large")
 
@@ -750,6 +775,7 @@ def render_results():
 
     st.markdown("<div style='height:5px;'></div>", unsafe_allow_html=True)
 
+    # sample prediction for cnn
     if st.session_state.last_action == "cnn":
         pred_df = st.session_state.raw_cnn_predictions
         if pred_df is None or pred_df.empty:
@@ -765,12 +791,13 @@ def render_results():
             )
 
             row = pred_df.iloc[int(sample_idx)]
-
+            # convers labels to text
             true_label = "PD" if int(row["true_label"]) == 1 else "HC"
             pred_label = "PD" if int(row["pred_label"]) == 1 else "HC"
+            # compute confidenec and correctness
             confidence = float(max(row["proba_pd"], row["proba_hc"]))
             correct = int(row["true_label"]) == int(row["pred_label"])
-
+            # displays info about selected samplle
             info_df = pd.DataFrame([{
                 "recording": row.get("recording", ""),
                 "subject_key": row.get("subject_key", ""),
@@ -800,6 +827,7 @@ def render_results():
             else:
                 st.error("Incorrect prediction")
 
+    # sample prediction for svm
     elif st.session_state.last_action == "svm":
         df = st.session_state.dataset_df
         model = st.session_state.last_model
@@ -808,6 +836,7 @@ def render_results():
             st.info("Sample prediction is available after Train SVM.")
         else:
             try:
+                # finds which col contains true class labels
                 label_candidates = [c for c in df.columns if c.lower() in ["label", "class", "y", "target"]]
                 if not label_candidates:
                     st.warning("No label column found in dataset.")
@@ -824,7 +853,7 @@ def render_results():
 
                     sample = df.iloc[[sample_idx]].copy()
                     y_true = sample[ycol].iloc[0]
-
+                    # removes cols that shouldnt be used as model feats
                     meta_cols = [
                         c for c in [
                             "group", "subject_id", "subject_key", "window_start",
@@ -834,11 +863,13 @@ def render_results():
 
                     X_sample = sample.drop(columns=[ycol] + meta_cols, errors="ignore")
 
+                    # run svm prediction
                     pred = model.predict(X_sample)[0]
                     proba = model.predict_proba(X_sample)[0]
 
                     pred_label = "PD" if int(pred) == 1 else "HC"
                     true_label = "PD" if int(y_true) == 1 else "HC"
+
                     confidence = float(max(proba))
                     correct = int(pred) == int(y_true)
 
@@ -864,6 +895,7 @@ def render_results():
             except Exception as e:
                 st.error(f"Could not generate sample prediction: {e}")
 
+    # sample prediction for svm group cv
     elif st.session_state.last_action == "svm_group_cv":
         pred_df = st.session_state.last_group_cv_predictions
 
@@ -883,9 +915,10 @@ def render_results():
 
             true_label = "PD" if int(row["true_label"]) == 1 else "HC"
             pred_label = "PD" if int(row["pred_label"]) == 1 else "HC"
+
             confidence = float(max(row["proba_pd"], row["proba_hc"]))
             correct = int(row["true_label"]) == int(row["pred_label"])
-
+            # shows sample metadata
             info_df = pd.DataFrame([{
                 "row_index": int(row["row_index"]),
                 "fold": int(row["fold"]),
@@ -934,10 +967,12 @@ def render_results():
 
     st.markdown("<div style='height:5px;'></div>", unsafe_allow_html=True)
 
+    # loads last saved run
     runs = load_runs(limit=1)
     if not runs:
         st.info("No run record to export yet.")
     else:
+        # shows last run and enables download
         last = runs[0]
         st.json(last, expanded=False)
         payload = json.dumps(last, ensure_ascii=False, indent=2).encode("utf-8")

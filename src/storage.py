@@ -9,12 +9,12 @@ from src.data_utils import dataset_summary
 from src.state import RunRecord
 from src.utils import now_iso
 
-def save_run(action: str, status: str, metrics: dict):
-    df = st.session_state.dataset_df
-    n_rows, n_channels = dataset_summary(df)
-    run_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+def save_run(action: str, status: str, metrics: dict): # saves info about a training run
+    df = st.session_state.dataset_df # gets currently loaded dataset
+    n_rows, n_channels = dataset_summary(df) # computes nr of rows and channels
+    run_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f") # generates run id
 
-    rec = RunRecord(
+    rec = RunRecord( # contains all run info
         run_id=run_id,
         timestamp=now_iso(),
         dataset_name=st.session_state.dataset_name,
@@ -32,7 +32,7 @@ def save_run(action: str, status: str, metrics: dict):
 
     return path
 
-def load_runs(limit: int = 30):
+def load_runs(limit: int = 30): # loads previous runs
     items = sorted(RUNS_DIR.glob("*.json"), reverse=True)
     out = []
 

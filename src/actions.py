@@ -6,7 +6,7 @@ from src.storage import save_run
 from src.utils import now_iso
 
 
-def require_tabular_dataset(action_name: str):
+def require_tabular_dataset(action_name: str): # checks if .csv is loaded
     if st.session_state.dataset_df is None:
         set_status("Error")
         log(f"Cannot run {action_name}: dataset not loaded.", now_iso)
@@ -15,7 +15,7 @@ def require_tabular_dataset(action_name: str):
     return True
 
 
-def require_raw_eeg(action_name: str):
+def require_raw_eeg(action_name: str): # checks if raw eeg files are loaded
     if not st.session_state.raw_file_payloads:
         set_status("Error")
         log(f"Cannot run {action_name}: raw BrainVision files not loaded.", now_iso)
@@ -32,6 +32,7 @@ def run_train_svm():
     st.session_state.last_action = "svm"
     log("Training SVM started.", now_iso)
 
+    # calls svm training funct using loaded data
     metrics, cm, roc, model, err = train_svm(st.session_state.dataset_df)
 
     if err:
@@ -47,10 +48,13 @@ def run_train_svm():
         save_run(action="svm", status="Error", metrics={"error": err})
         return
 
+    # saves trained model
     st.session_state.last_model = model
+    # clears other prediction results
     st.session_state.last_group_cv_predictions = None
     st.session_state.raw_cnn_predictions = None
 
+    # save evaluation results
     st.session_state.last_metrics = metrics
     st.session_state.last_cm = cm
     st.session_state.last_cm_window = None
@@ -60,7 +64,7 @@ def run_train_svm():
     set_status("Ready")
     log(f"SVM done. Metrics: {metrics}", now_iso)
     save_run(action="svm", status="Ready", metrics=metrics)
-
+    # move to results page
     st.session_state.page = "Results"
 
 
@@ -72,8 +76,10 @@ def run_train_svm_group_cv():
     st.session_state.last_action = "svm_group_cv"
     log("Running SVM Group CV started.", now_iso)
 
+    # calls svm group cv training func using loaded data
     metrics, cm_window, cm_subject, sample_predictions_df, err = train_svm_group_cv(
         st.session_state.dataset_df,
+        # data is split into 5 folds
         n_splits=5,
         random_state=42
     )
@@ -97,8 +103,8 @@ def run_train_svm_group_cv():
     st.session_state.last_cm_subject = cm_subject
     st.session_state.last_roc = None
     st.session_state.last_model = None
-    st.session_state.last_group_cv_predictions = sample_predictions_df
     st.session_state.raw_cnn_predictions = None
+    st.session_state.last_group_cv_predictions = sample_predictions_df
     st.session_state.last_action = "svm_group_cv"
 
     set_status("Ready")
@@ -108,7 +114,6 @@ def run_train_svm_group_cv():
         now_iso
     )
     save_run(action="svm_group_cv", status="Ready", metrics=metrics)
-
     st.session_state.page = "Results"
 
 
@@ -120,6 +125,7 @@ def run_train_cnn():
     st.session_state.last_action = "cnn"
     log("Training raw EEG CNN started.", now_iso)
 
+    # calls cnn training func using loaded data
     metrics, cm, roc, model, pred_df, err = train_raw_eeg_cnn(
         payloads=st.session_state.raw_file_payloads,
         config=st.session_state.preprocessing_summary,
