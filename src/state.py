@@ -31,7 +31,7 @@ def init_session_state(): # default session state values
         "page": "Dashboard", # default page
         "dataset_df": None, # loaded .csv dataset
         "dataset_name": None, # name of currently loaded dataset
-        "dataset_source": None,
+        "dataset_source": None, # whether dataset was loaded from csv or mat
         "preproc": PreprocConfig(), # default preprocessing config
         "run_status": "Idle", # app status
         "logs": [], # list of execution logs
