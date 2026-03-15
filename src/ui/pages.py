@@ -355,6 +355,7 @@ def render_import():
 
                     st.session_state.dataset_df = df
                     st.session_state.dataset_name = svm_name.strip() or "eeg_csv"
+                    st.session_state.dataset_source = "csv"
                     st.session_state.last_group_cv_predictions = None
 
                     n_rows, n_features = dataset_summary(df)
@@ -384,6 +385,7 @@ def render_import():
 
                     st.session_state.dataset_df = df
                     st.session_state.dataset_name = svm_name.strip() or uploaded_mat.name.rsplit(".", 1)[0]
+                    st.session_state.dataset_source = "mat"
                     st.session_state.last_group_cv_predictions = None
 
                     n_rows, n_features = dataset_summary(df)
@@ -531,7 +533,7 @@ def render_preprocess():
 
         # saves current config settings
         if st.button("Save preprocessing config", use_container_width=True):
-            st.session_state.preprocessing_summary = {
+            new_summary = {
                 "window_sec": float(window_sec),
                 "step_sec": float(step_sec),
                 "max_windows_per_recording": int(max_windows),
@@ -541,6 +543,10 @@ def render_preprocess():
                 "bandpass_low": float(bandpass_low),
                 "bandpass_high": float(bandpass_high),
             }
+
+            config_changed = st.session_state.preprocessing_summary != new_summary
+
+            st.session_state.preprocessing_summary = new_summary
             st.session_state.preprocessing_logs = [
                 f"Window length: {window_sec} sec",
                 f"Step: {step_sec} sec",
@@ -550,7 +556,27 @@ def render_preprocess():
                 f"Use bandpass: {use_bandpass}",
                 f"Bandpass: {bandpass_low} - {bandpass_high} Hz",
             ]
-            set_status("Ready")
+
+            if config_changed:
+                st.session_state.raw_file_payloads = None
+                st.session_state.raw_manifest_df = None
+                st.session_state.raw_dataset_summary = None
+                st.session_state.raw_cnn_predictions = None
+
+                if st.session_state.dataset_source == "mat":
+                    st.session_state.dataset_df = None
+                    st.session_state.dataset_name = None
+                    st.session_state.dataset_source = None
+                    st.session_state.last_group_cv_predictions = None
+
+            if (
+                st.session_state.dataset_df is not None
+                or st.session_state.raw_file_payloads is not None
+            ):
+                set_status("Ready")
+            else:
+                set_status("Idle")
+
             log("Raw EEG preprocessing config updated.", now_iso)
             st.success("Configuration saved.")
             st.rerun()

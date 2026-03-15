@@ -25,8 +25,8 @@ def sidebar_nav():
             st.session_state.page = label
 
     nav_button("Dashboard")
-    nav_button("Import")
     nav_button("Preprocess")
+    nav_button("Import")
     nav_button("Results")
 
     st.sidebar.markdown("<div class='sidebar-title'>Run</div>", unsafe_allow_html=True)
