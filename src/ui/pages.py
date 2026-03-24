@@ -19,7 +19,7 @@ from src.config import (
     RAW_USE_NOTCH,
 )
 from src.data_utils import dataset_summary, parse_csv, parse_iowa_mat
-from src.raw_eeg import build_brainvision_payload
+from src.raw_eeg import build_brainvision_payload, load_brainvision_recording_preview
 from src.state import log, set_status
 from src.storage import load_runs, save_run
 from src.ui.components import plot_cm, plot_roc, status_dot
@@ -143,6 +143,12 @@ def render_dashboard():
 
         if st.button("Run SVM Group CV", use_container_width=True, disabled=not tabular_ok):
             run_train_svm_group_cv()
+
+        st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
+
+        if st.button("Open Raw EEG Viewer", use_container_width=True, disabled=not raw_ok):
+            st.session_state.page = "Raw EEG Viewer"
+            st.rerun()
 
         st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
 
@@ -277,6 +283,10 @@ def render_import():
 
             with st.expander("Preview detected BrainVision recordings", expanded=True):
                 st.dataframe(st.session_state.raw_manifest_df, use_container_width=True, hide_index=True)
+
+            if st.button("Open Raw EEG Viewer", use_container_width=True, key="open_raw_viewer_from_import"):
+                st.session_state.page = "Raw EEG Viewer"
+                st.rerun()
 
             incomplete_df = st.session_state.raw_manifest_df[
                 ~st.session_state.raw_manifest_df["complete_triplet"]
@@ -1009,3 +1019,140 @@ def render_results():
             mime="application/json",
             use_container_width=True,
         )
+
+
+def render_raw_viewer():
+    st.markdown(
+        """
+        <div class="card">
+          <div class="card-title">
+            <div>
+              <div style="font-weight:800; font-size:1.1rem;">Raw EEG signal viewer</div>
+              <div class="subtle">Visual inspection of BrainVision EEG recordings loaded in Import</div>
+            </div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
+
+    if st.session_state.raw_manifest_df is None or not st.session_state.raw_file_payloads: # checks if raw eeg data was loaded
+        st.info("Load a raw EEG BrainVision dataset first from the Import page.")
+        if st.button("Go to Import", use_container_width=False):
+            st.session_state.page = "Import"
+            st.rerun()
+        return
+
+    manifest_df = st.session_state.raw_manifest_df.copy() # contains info about uploaded recordinggs
+    complete_df = manifest_df[manifest_df["complete_triplet"]].copy() # only keeps recordings with a full triplet
+
+    if complete_df.empty:
+        st.warning("No complete BrainVision recordings are available for visualization.")
+        return
+
+    left, right = st.columns([0.9, 1.1], gap="large")
+
+    with left:
+        # recording selector
+        recordings = complete_df["recording"].tolist()
+        selected_recording = st.selectbox(
+            "Recording",
+            options=recordings,
+            index=0,
+            key="raw_viewer_recording",
+        )
+
+        # time range slider
+        preview_seconds = st.slider(
+            "Seconds to display",
+            min_value=1,
+            max_value=30,
+            value=10,
+            step=1,
+            key="raw_viewer_seconds",
+        )
+
+        data, times, summary, err = load_brainvision_recording_preview(
+            st.session_state.raw_file_payloads,
+            selected_recording,
+            seconds=float(preview_seconds),
+        )
+
+        if err:
+            st.error(err)
+            return
+
+        # reads the list of channel names from the loaded recording
+        available_channels = summary["channel_names"]
+        default_count = min(6, len(available_channels))
+        selected_channels = st.multiselect(
+            "Channels",
+            options=available_channels,
+            default=available_channels[:default_count],
+            key="raw_viewer_channels",
+        )
+
+        if not selected_channels:
+            st.warning("Select at least one channel to display the signal.")
+            return
+
+        st.markdown(
+            f"""
+            <div class="card">
+              <div class="card-title">
+                <div style="font-weight:800; font-size:1.0rem;">Recording summary</div>
+                <div class="subtle">{summary['recording']}</div>
+              </div>
+              <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">
+                <span class="pill">Channels: <b style="color:var(--txt)">{summary['n_channels']}</b></span>
+                <span class="pill">Samples: <b style="color:var(--txt)">{summary['n_samples']}</b></span>
+                <span class="pill">Sampling rate: <b style="color:var(--txt)">{summary['sampling_rate']:.2f} Hz</b></span>
+                <span class="pill">Displayed duration: <b style="color:var(--txt)">{summary['duration_sec']:.2f} s</b></span>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
+        preview_df = complete_df[["recording", "subject_key", "label_guess"]].copy()
+        st.dataframe(preview_df, use_container_width=True, hide_index=True)
+
+    with right:
+        import matplotlib.pyplot as plt
+        import numpy as np
+
+        channel_to_idx = {name: idx for idx, name in enumerate(available_channels)} # creates a dict to link each channel name to its numeric indesx
+        ordered_indices = [channel_to_idx[name] for name in selected_channels] # converts the selected channel names into indices
+        selected_data = data[ordered_indices] # extracts only the selected channel sigs from the eeg data
+
+        # finds the largest absolute sig value from the selected channels
+        scale = np.max(np.abs(selected_data))
+        if scale == 0:
+            scale = 1.0
+
+        fig = plt.figure(figsize=(12, 7))
+        spacing = 3.0
+
+        for plot_idx, channel_name in enumerate(selected_channels):
+            signal = selected_data[plot_idx] / scale # divides by scale
+            offset = (len(selected_channels) - 1 - plot_idx) * spacing # vertical offset
+            plt.plot(times, signal + offset, linewidth=0.9) # upward or downward shift
+            plt.text(times[0] if len(times) else 0, offset, channel_name, va="bottom", ha="left")
+
+        plt.title(f"Raw EEG signals - {selected_recording}")
+        plt.xlabel("Time (s)")
+        plt.yticks([])
+        plt.grid(True, alpha=0.25)
+        st.pyplot(fig, clear_figure=True)
+
+        raw_table = {"time_sec": times}
+        for channel_name in selected_channels:
+            raw_table[channel_name] = data[channel_to_idx[channel_name]]
+        raw_table_df = pd.DataFrame(raw_table)
+
+        st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
+        with st.expander("Preview signal values", expanded=False):
+            st.dataframe(raw_table_df.head(300), use_container_width=True, hide_index=True)

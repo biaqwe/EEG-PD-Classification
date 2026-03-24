@@ -9,6 +9,7 @@ from src.ui.pages import (
     render_import,
     render_preprocess,
     render_results,
+    render_raw_viewer,
 )
 
 st.set_page_config(
@@ -31,6 +32,8 @@ elif page == "Import":
     render_import()
 elif page == "Preprocess":
     render_preprocess()
+elif page == "Raw EEG Viewer":
+    render_raw_viewer()
 elif page == "Results":
     render_results()
 else:

@@ -250,3 +250,52 @@ def load_brainvision_windows( # prepares raw eeg windows for cnn training
     }
 
     return X, y, groups, meta_df, summary, None
+
+
+def load_brainvision_recording_preview(payloads: dict, recording: str, seconds: float | None = None): # loads one raw eeg recoring and prepares a preview for visualization
+    try:
+        import mne
+    except Exception as e:
+        return None, None, None, f"MNE is not available: {e}"
+
+    tmpdir, vhdr_paths = materialize_brainvision_payload(payloads)
+
+    try:
+        # searches for the selected recording
+        selected_path = None
+        for vhdr_path in vhdr_paths:
+            if vhdr_path.stem == recording:
+                selected_path = vhdr_path
+                break
+
+        if selected_path is None:
+            return None, None, None, f"Recording not found: {recording}"
+
+        raw = mne.io.read_raw_brainvision(selected_path, preload=True, verbose="ERROR") # reads the file using mne
+        # preload=True: loads the sig data directly into memory, verbose="ERROR": suppresses extra nonerror mne msgs
+        raw.pick("eeg")
+
+        if len(raw.ch_names) == 0:
+            return None, None, None, "No EEG channels found in the selected recording."
+
+        sfreq = float(raw.info["sfreq"]) # sampling freq
+        # crops signal to requested duration
+        if seconds is not None and seconds > 0:
+            max_samples = int(seconds * sfreq)
+            if max_samples > 0 and raw.n_times > max_samples:
+                raw.crop(tmin=0.0, tmax=max(0.0, (max_samples - 1) / sfreq))
+
+        data, times = raw.get_data(return_times=True) # extracts sig values and time values
+        summary = {
+            "recording": recording,
+            "n_channels": int(data.shape[0]),
+            "n_samples": int(data.shape[1]),
+            "duration_sec": float(times[-1]) if len(times) else 0.0,
+            "sampling_rate": sfreq,
+            "channel_names": list(raw.ch_names),
+        }
+        return data.astype(np.float32), times.astype(np.float32), summary, None
+    except Exception as e:
+        return None, None, None, f"Failed to load preview for {recording}: {e}"
+    finally:
+        tmpdir.cleanup()

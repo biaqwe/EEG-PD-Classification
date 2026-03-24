@@ -28,6 +28,7 @@ def sidebar_nav():
     nav_button("Preprocess")
     nav_button("Import")
     nav_button("Results")
+    nav_button("Raw EEG Viewer")
 
     st.sidebar.markdown("<div class='sidebar-title'>Run</div>", unsafe_allow_html=True)
 
