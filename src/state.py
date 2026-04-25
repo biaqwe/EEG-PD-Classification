@@ -47,9 +47,12 @@ def init_session_state(): # default session state values
         "last_group_cv_predictions": None, # last svm group cv predictions
 
         "raw_file_payloads": None, # uploaded raw eeg files
+        "raw_dataset_name": None, # name of currently loaded raw eeg dataset
         "raw_manifest_df": None, # table describil detected eeg recordings
         "raw_dataset_summary": None, # summary of raw eeg dataset
         "raw_cnn_predictions": None, # prediction table from cnn
+        "mat_file_payload": None, # uploaded mat file bytes kept so config can be changed without reupload
+        "mat_file_name": None, # uploaded mat file name kept so config can be changed without reupload
     }
 
     for key, value in defaults.items():

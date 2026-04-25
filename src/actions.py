@@ -18,8 +18,8 @@ def require_tabular_dataset(action_name: str): # checks if .csv is loaded
 def require_raw_eeg(action_name: str): # checks if raw eeg files are loaded
     if not st.session_state.raw_file_payloads:
         set_status("Error")
-        log(f"Cannot run {action_name}: raw BrainVision files not loaded.", now_iso)
-        save_run(action=action_name, status="Error", metrics={"error": "raw BrainVision files not loaded"})
+        log(f"Cannot run {action_name}: spectrogram CNN raw BrainVision files not loaded.", now_iso)
+        save_run(action=action_name, status="Error", metrics={"error": "spectrogram CNN raw BrainVision files not loaded"})
         return False
     return True
 
@@ -118,12 +118,12 @@ def run_train_svm_group_cv():
 
 
 def run_train_cnn():
-    if not require_raw_eeg("cnn_raw_eeg"):
+    if not require_raw_eeg("cnn_spectrogram"):
         return
 
     set_status("Running")
     st.session_state.last_action = "cnn"
-    log("Training raw EEG CNN started.", now_iso)
+    log("Training spectrogram CNN started.", now_iso)
 
     # calls cnn training func using loaded data
     metrics, cm, roc, model, pred_df, err = train_raw_eeg_cnn(
@@ -133,7 +133,7 @@ def run_train_cnn():
 
     if err:
         set_status("Error")
-        log(f"Raw EEG CNN failed: {err}", now_iso)
+        log(f"Spectrogram CNN failed: {err}", now_iso)
         st.session_state.last_metrics = {"error": err}
         st.session_state.last_cm = None
         st.session_state.last_cm_window = None
@@ -141,7 +141,7 @@ def run_train_cnn():
         st.session_state.last_roc = None
         st.session_state.last_model = None
         st.session_state.raw_cnn_predictions = None
-        save_run(action="cnn_raw_eeg", status="Error", metrics={"error": err})
+        save_run(action="cnn_spectrogram", status="Error", metrics={"error": err})
         return
 
     st.session_state.last_model = model
@@ -155,6 +155,6 @@ def run_train_cnn():
     st.session_state.last_roc = roc
 
     set_status("Ready")
-    log(f"Raw EEG CNN done. Metrics: {metrics}", now_iso)
-    save_run(action="cnn_raw_eeg", status="Ready", metrics=metrics)
+    log(f"Spectrogram CNN done. Metrics: {metrics}", now_iso)
+    save_run(action="cnn_spectrogram", status="Ready", metrics=metrics)
     st.session_state.page = "Results"

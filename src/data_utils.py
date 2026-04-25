@@ -60,7 +60,12 @@ def parse_iowa_mat(uploaded, preprocessing_summary=None): # converts .mat into .
 
         # creates temp .mat file
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-            tmp.write(uploaded.getbuffer())
+            if hasattr(uploaded, "getbuffer"):
+                tmp.write(uploaded.getbuffer())
+            elif hasattr(uploaded, "getvalue"):
+                tmp.write(uploaded.getvalue())
+            else:
+                tmp.write(uploaded.read())
             tmp_path = tmp.name
         # extracts feats from file
         df, summary = build_iowa_features_from_mat(

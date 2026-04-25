@@ -58,7 +58,7 @@ def status_dot():
 
 def render_topbar():
     df = st.session_state.dataset_df
-    ds_name = st.session_state.dataset_name or "No dataset"
+    ds_name = st.session_state.dataset_name or st.session_state.raw_dataset_name or "No dataset"
 
     if df is not None:
         n_rows, n_channels = dataset_summary(df)

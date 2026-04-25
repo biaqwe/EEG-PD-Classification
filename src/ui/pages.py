@@ -1,4 +1,5 @@
 import json
+import io
 
 import pandas as pd
 import streamlit as st
@@ -17,6 +18,8 @@ from src.config import (
     RAW_NOTCH_FREQ,
     RAW_USE_BANDPASS,
     RAW_USE_NOTCH,
+    SPECTROGRAM_HEIGHT,
+    SPECTROGRAM_WIDTH,
 )
 from src.data_utils import dataset_summary, parse_csv, parse_iowa_mat
 from src.raw_eeg import build_brainvision_payload, load_brainvision_recording_preview
@@ -250,6 +253,7 @@ def render_import():
                 st.error(err)
             else:
                 st.session_state.raw_file_payloads = payloads
+                st.session_state.raw_dataset_name = raw_name.strip() or "brainvision_raw_eeg"
                 st.session_state.raw_manifest_df = manifest_df
                 st.session_state.raw_cnn_predictions = None
 
@@ -385,6 +389,9 @@ def render_import():
                     st.rerun()
 
                 elif uploaded_mat is not None:
+                    st.session_state.mat_file_payload = uploaded_mat.getvalue()
+                    st.session_state.mat_file_name = uploaded_mat.name
+
                     df, summary, err = parse_iowa_mat(
                         uploaded_mat,
                         preprocessing_summary=st.session_state.preprocessing_summary,
@@ -483,6 +490,8 @@ def render_preprocess():
         "use_bandpass": bool(RAW_USE_BANDPASS),
         "bandpass_low": float(RAW_L_FREQ),
         "bandpass_high": float(RAW_H_FREQ),
+        "visual_height": int(SPECTROGRAM_HEIGHT),
+        "visual_width": int(SPECTROGRAM_WIDTH),
     }
 
     with left:
@@ -541,6 +550,24 @@ def render_preprocess():
             bandpass_low = float(default_cfg["bandpass_low"])
             bandpass_high = float(default_cfg["bandpass_high"])
 
+        c7, c8 = st.columns(2)
+        with c7:
+            visual_height = st.number_input(
+                "Spectrogram height",
+                min_value=32,
+                max_value=256,
+                value=int(default_cfg.get("visual_height", SPECTROGRAM_HEIGHT)),
+                step=16
+            )
+        with c8:
+            visual_width = st.number_input(
+                "Spectrogram width",
+                min_value=32,
+                max_value=256,
+                value=int(default_cfg.get("visual_width", SPECTROGRAM_WIDTH)),
+                step=16
+            )
+
         # saves current config settings
         if st.button("Save preprocessing config", use_container_width=True):
             new_summary = {
@@ -552,6 +579,8 @@ def render_preprocess():
                 "use_bandpass": bool(use_bandpass),
                 "bandpass_low": float(bandpass_low),
                 "bandpass_high": float(bandpass_high),
+                "visual_height": int(visual_height),
+                "visual_width": int(visual_width),
             }
 
             config_changed = st.session_state.preprocessing_summary != new_summary
@@ -565,15 +594,37 @@ def render_preprocess():
                 f"Notch freq: {notch_freq} Hz",
                 f"Use bandpass: {use_bandpass}",
                 f"Bandpass: {bandpass_low} - {bandpass_high} Hz",
+                f"Spectrogram size: {visual_height} x {visual_width}",
             ]
 
             if config_changed:
-                st.session_state.raw_file_payloads = None
-                st.session_state.raw_manifest_df = None
-                st.session_state.raw_dataset_summary = None
                 st.session_state.raw_cnn_predictions = None
+                st.session_state.last_model = None
+                st.session_state.last_metrics = {}
+                st.session_state.last_cm = None
+                st.session_state.last_roc = None
 
-                if st.session_state.dataset_source == "mat":
+                if st.session_state.dataset_source == "mat" and st.session_state.mat_file_payload is not None:
+                    mat_buffer = io.BytesIO(st.session_state.mat_file_payload)
+                    mat_buffer.name = st.session_state.mat_file_name or "dataset.mat"
+                    df, summary, err = parse_iowa_mat(
+                        mat_buffer,
+                        preprocessing_summary=new_summary,
+                    )
+
+                    if err:
+                        st.warning(f"Config was saved, but the stored MAT dataset could not be regenerated: {err}")
+                    else:
+                        st.session_state.dataset_df = df
+                        st.session_state.last_group_cv_predictions = None
+                        n_rows, n_features = dataset_summary(df)
+                        log(
+                            f"Stored MAT dataset regenerated with new preprocessing config "
+                            f"({n_rows} rows, {n_features} features).",
+                            now_iso
+                        )
+
+                elif st.session_state.dataset_source == "mat":
                     st.session_state.dataset_df = None
                     st.session_state.dataset_name = None
                     st.session_state.dataset_source = None
@@ -730,21 +781,111 @@ def render_results():
             with mcols[2]:
                 st.metric("AUC", "-" if auc is None else f"{auc:.3f}")
 
+        if st.session_state.last_action == "cnn":
+            st.markdown("**Subject-level performance (averaged window probabilities)**")
+            subject_cols = st.columns(3)
+            subject_acc = metrics.get("subject_accuracy", None)
+            subject_f1 = metrics.get("subject_f1", None)
+            subject_auc = metrics.get("subject_auc", None)
+
+            with subject_cols[0]:
+                st.metric("Subject Accuracy", "-" if subject_acc is None else f"{subject_acc:.3f}")
+            with subject_cols[1]:
+                st.metric("Subject F1", "-" if subject_f1 is None else f"{subject_f1:.3f}")
+            with subject_cols[2]:
+                st.metric("Subject AUC", "-" if subject_auc is None else f"{subject_auc:.3f}")
+
+            st.markdown("**CNN diagnostic checks**")
+            diag_cols = st.columns(4)
+
+            with diag_cols[0]:
+                v = metrics.get("window_mean_proba_pd_for_true_hc", None)
+                st.metric("Mean PD prob | true HC", "-" if v is None else f"{v:.3f}")
+
+            with diag_cols[1]:
+                v = metrics.get("window_mean_proba_pd_for_true_pd", None)
+                st.metric("Mean PD prob | true PD", "-" if v is None else f"{v:.3f}")
+
+            with diag_cols[2]:
+                v = metrics.get("val_subject_auc", None)
+                st.metric("Val subject AUC", "-" if v is None else f"{v:.3f}")
+
+            with diag_cols[3]:
+                v = metrics.get("subject_auc_if_flipped", None)
+                st.metric("Subject AUC if flipped", "-" if v is None else f"{v:.3f}")
+
+            if metrics.get("subject_looks_inverted", False):
+                st.warning(
+                    "The model gives higher PD probabilities to HC subjects than to PD subjects. "
+                    "Check label detection in the raw EEG manifest and inspect filenames."
+                )
+
+            st.markdown("**Subject split check**")
+
+            leakage_detected = metrics.get("subject_leakage_detected", None)
+
+            if leakage_detected is False:
+                st.success("No subject leakage detected between train, validation and test splits.")
+            elif leakage_detected is True:
+                st.error("Subject leakage detected.")
+            else:
+                st.info("Subject leakage check not available for this run.")
+
+            split_rows = [
+                {
+                    "split": "train",
+                    "subjects": metrics.get("train_subjects", "-"),
+                    "HC subjects": metrics.get("train_hc_subjects", "-"),
+                    "PD subjects": metrics.get("train_pd_subjects", "-"),
+                    "windows": metrics.get("train_windows", "-"),
+                    "HC windows": metrics.get("train_hc_windows", "-"),
+                    "PD windows": metrics.get("train_pd_windows", "-"),
+                    "subject keys": metrics.get("train_subject_keys", "-"),
+                },
+                {
+                    "split": "validation",
+                    "subjects": metrics.get("val_subjects", "-"),
+                    "HC subjects": metrics.get("val_hc_subjects", "-"),
+                    "PD subjects": metrics.get("val_pd_subjects", "-"),
+                    "windows": metrics.get("val_windows", "-"),
+                    "HC windows": metrics.get("val_hc_windows", "-"),
+                    "PD windows": metrics.get("val_pd_windows", "-"),
+                    "subject keys": metrics.get("val_subject_keys", "-"),
+                },
+                {
+                    "split": "test",
+                    "subjects": metrics.get("test_subjects", "-"),
+                    "HC subjects": metrics.get("test_hc_subjects", "-"),
+                    "PD subjects": metrics.get("test_pd_subjects", "-"),
+                    "windows": metrics.get("test_windows", "-"),
+                    "HC windows": metrics.get("test_hc_windows", "-"),
+                    "PD windows": metrics.get("test_pd_windows", "-"),
+                    "subject keys": metrics.get("test_subject_keys", "-"),
+                },
+            ]
+
+            st.dataframe(pd.DataFrame(split_rows), use_container_width=True, hide_index=True)
+
         if "error" in metrics:
             st.error(metrics["error"])
 
         # extra info for cnn
         if st.session_state.last_action == "cnn":
             st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
-            extra_cols = st.columns(4)
+            extra_cols = st.columns(6)
             with extra_cols[0]:
                 st.metric("Subjects", str(metrics.get("n_subjects", "-")))
             with extra_cols[1]:
                 st.metric("Recordings", str(metrics.get("n_recordings", "-")))
             with extra_cols[2]:
-                st.metric("Channels", str(metrics.get("n_channels", "-")))
+                st.metric("Raw channels", str(metrics.get("n_channels", "-")))
             with extra_cols[3]:
-                st.metric("Window samples", str(metrics.get("window_samples", "-")))
+                st.metric("CNN input channels", str(metrics.get("cnn_input_channels", "-")))
+            with extra_cols[4]:
+                st.metric("Spectrogram", f"{metrics.get('visual_height', '-')} x {metrics.get('visual_width', '-')}")
+            with extra_cols[5]:
+                threshold = metrics.get("threshold", None)
+                st.metric("Threshold", "-" if threshold is None else f"{threshold:.3f}")
 
     st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
 
@@ -1027,8 +1168,8 @@ def render_raw_viewer():
         <div class="card">
           <div class="card-title">
             <div>
-              <div style="font-weight:800; font-size:1.1rem;">Raw EEG signal viewer</div>
-              <div class="subtle">Visual inspection of BrainVision EEG recordings loaded in Import</div>
+              <div style="font-weight:800; font-size:1.1rem;">Preprocessed EEG signal viewer</div>
+              <div class="subtle">Visual inspection after applying the saved preprocessing configuration</div>
             </div>
           </div>
         </div>
@@ -1078,6 +1219,7 @@ def render_raw_viewer():
             st.session_state.raw_file_payloads,
             selected_recording,
             seconds=float(preview_seconds),
+            config=st.session_state.preprocessing_summary,
         )
 
         if err:
@@ -1142,7 +1284,7 @@ def render_raw_viewer():
             plt.plot(times, signal + offset, linewidth=0.9) # upward or downward shift
             plt.text(times[0] if len(times) else 0, offset, channel_name, va="bottom", ha="left")
 
-        plt.title(f"Raw EEG signals - {selected_recording}")
+        plt.title(f"Preprocessed EEG signals - {selected_recording}")
         plt.xlabel("Time (s)")
         plt.yticks([])
         plt.grid(True, alpha=0.25)

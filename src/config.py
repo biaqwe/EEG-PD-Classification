@@ -35,9 +35,15 @@ RAW_USE_BANDPASS = True # bandpass enabled?
 RAW_USE_NOTCH = True # notch enabled?
 RAW_VAL_SIZE = 0.20 # validation set size for cnn training
 
-CNN_EPOCHS = 20 # nr of training passes thru dataset
-CNN_BATCH_SIZE = 32 # nr of samples processed at once
-CNN_LR = 1e-3 # learning rate
-CNN_WEIGHT_DECAY = 1e-4 # weight decay to prevent overfitting
-CNN_DROPOUT = 0.25 # dropout probability to improve generalization
-CNN_PATIENCE = 5 # for early stopping
+CNN_EPOCHS = 60 # nr of training passes thru dataset
+CNN_BATCH_SIZE = 16 # nr of samples processed at once
+CNN_LR = 3e-4 # learning rate
+CNN_WEIGHT_DECAY = 5e-4 # weight decay to prevent overfitting
+CNN_DROPOUT = 0.45 # dropout probability to improve generalization
+CNN_PATIENCE = 10 # for early stopping
+
+SPECTROGRAM_HEIGHT = 64 # spectrogram image height used by cnn
+SPECTROGRAM_WIDTH = 64 # spectrogram image width used by cnn
+SPECTROGRAM_NPERSEG = 128 # nr of samples per spectrogram segment
+SPECTROGRAM_OVERLAP_RATIO = 0.75 # overlap between spectrogram segments
+SPECTROGRAM_CHANNEL_MODE = "mean" # mean uses one averaged spectrogram instead of 63 separate input channels

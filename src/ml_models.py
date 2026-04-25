@@ -23,16 +23,20 @@ from src.config import (
     CNN_WEIGHT_DECAY,
     CNN_DROPOUT,
     CNN_PATIENCE,
+    SPECTROGRAM_HEIGHT,
+    SPECTROGRAM_WIDTH,
 )
 from src.data_utils import get_xy
-from src.raw_eeg import load_brainvision_windows
+from src.raw_eeg import load_brainvision_spectrograms
 
 try:
     from sklearn.model_selection import GroupShuffleSplit, StratifiedGroupKFold
     from sklearn.metrics import (
         accuracy_score,
+        balanced_accuracy_score,
         confusion_matrix,
         f1_score,
+        recall_score,
         roc_auc_score,
         roc_curve,
     )
@@ -95,6 +99,15 @@ def train_svm(df: pd.DataFrame): # trains and evaluates svm model
     gss = GroupShuffleSplit(n_splits=1, test_size=TEST_SIZE, random_state=RANDOM_STATE)
     train_idx, test_idx = next(gss.split(X, y, groups))
 
+    train_groups = set(groups[train_idx])
+    test_groups = set(groups[test_idx])
+    overlap = sorted(train_groups.intersection(test_groups))
+
+    if overlap:
+        return None, None, None, None, (
+            "Subject leakage detected in SVM train/test split: " + ", ".join(overlap)
+        )
+
     # builds train and test sets
     X_train, X_test = X.values[train_idx], X.values[test_idx]
     y_train, y_test = y.values[train_idx], y.values[test_idx]
@@ -143,25 +156,52 @@ def subject_aggregate(df_fold: pd.DataFrame): # combines multiple window predict
     )
 
 
-def safe_threshold(y_true, proba): # computes classification threshold based on roc curve
-    fpr, tpr, thr = roc_curve(y_true, proba) # calculates roc curve
-    # fpr: false positive rate, tpr: true positive rate, thr: probability thresholds
-    j = tpr - fpr # computes j score for each threshold to measure how well it separates the two classes
-    idx = int(np.argmax(j)) # finds index of max j score
-    t = float(thr[idx]) # selects probability threshold of the best point
-    if not np.isfinite(t):
-        t = 0.5
-    return t
+def safe_threshold(y_true, proba): # computes classification threshold based on validation data
+    y_true = np.asarray(y_true).astype(int)
+    proba = np.asarray(proba).astype(float)
+
+    if len(y_true) == 0 or len(np.unique(y_true)) < 2:
+        return 0.5
+
+    candidates = np.unique(
+        np.concatenate([
+            np.array([0.5]),
+            np.linspace(0.20, 0.80, 31),
+            proba,
+        ])
+    )
+
+    best_threshold = 0.5
+    best_score = -1.0
+    best_has_two_classes = False
+
+    for threshold in candidates:
+        threshold = float(np.clip(threshold, 0.05, 0.95))
+        pred = (proba >= threshold).astype(int)
+
+        has_two_classes = len(np.unique(pred)) == 2
+        f1 = f1_score(y_true, pred, zero_division=0)
+        bacc = balanced_accuracy_score(y_true, pred)
+        score = f1 + bacc
+
+        if has_two_classes and not best_has_two_classes:
+            best_threshold = threshold
+            best_score = score
+            best_has_two_classes = True
+        elif has_two_classes == best_has_two_classes and score > best_score:
+            best_threshold = threshold
+            best_score = score
+
+    return float(best_threshold)
 
 
 def metrics_from_proba(y_true, proba, thr): # calculates metrics
     pred = (proba >= thr).astype(int) # converts probabilities intro predictied classes
     acc = float(accuracy_score(y_true, pred)) # accuracy
-    f1 = float(f1_score(y_true, pred)) # f1 score
+    f1 = float(f1_score(y_true, pred, zero_division=0)) # f1 score
     auc = float(roc_auc_score(y_true, proba)) if len(np.unique(y_true)) > 1 else float("nan") # area under the roc curve
-    cm = confusion_matrix(y_true, pred) # confusion matrix
+    cm = confusion_matrix(y_true, pred, labels=[0, 1]) # confusion matrix
     return acc, f1, auc, cm
-
 
 def train_svm_group_cv(df: pd.DataFrame, n_splits: int = N_SPLITS, random_state: int = RANDOM_STATE): # trains and evaluates svm model using gorup cross validation
     if not SKLEARN_OK:
@@ -251,8 +291,8 @@ def train_svm_group_cv(df: pd.DataFrame, n_splits: int = N_SPLITS, random_state:
         clf.fit(X_train, y_train) # trains the model using the training data of current fold
 
         proba_test = clf.predict_proba(X_test)[:, 1] # predicts the probability of pd for each test sample
-        # computes best threshold for this fold from roc curve
-        thr = safe_threshold(y_test, proba_test)
+        # fixed threshold avoids using the test fold to choose the threshold
+        thr = 0.5
         thresholds.append(thr)
 
         pred_test = (proba_test >= thr).astype(int) # turns probabilities into class lables
@@ -376,6 +416,140 @@ def train_svm_group_cv(df: pd.DataFrame, n_splits: int = N_SPLITS, random_state:
     return metrics, win_cm_sum, subj_cm_sum, sample_predictions_df, None
 
 
+def _stratified_group_split(X, y, groups, n_splits=4, random_state=RANDOM_STATE, fold_index=0): # creates a stratified subject-level split
+    subject_df = pd.DataFrame({
+        "subject_key": groups,
+        "label": y,
+    }).groupby("subject_key", as_index=False).agg(
+        label=("label", "first")
+    )
+
+    min_groups_per_class = int(subject_df["label"].value_counts().min())
+    effective_splits = min(int(n_splits), min_groups_per_class)
+
+    if effective_splits >= 2:
+        splitter = StratifiedGroupKFold(
+            n_splits=effective_splits,
+            shuffle=True,
+            random_state=random_state,
+        )
+        splits = list(splitter.split(X, y, groups=groups))
+        return splits[int(fold_index) % len(splits)]
+
+    splitter = GroupShuffleSplit(
+        n_splits=1,
+        test_size=TEST_SIZE,
+        random_state=random_state,
+    )
+    return next(splitter.split(X, y, groups))
+
+
+def _split_info(y, groups, idx, prefix): # returns class distribution for one split
+    y_part = np.asarray(y)[idx]
+    groups_part = np.asarray(groups)[idx]
+
+    subject_df = pd.DataFrame({
+        "subject_key": groups_part,
+        "label": y_part,
+    }).groupby("subject_key", as_index=False).agg(
+        label=("label", "first")
+    )
+
+    return {
+        f"{prefix}_windows": int(len(y_part)),
+        f"{prefix}_subjects": int(subject_df["subject_key"].nunique()),
+        f"{prefix}_hc_windows": int((y_part == 0).sum()),
+        f"{prefix}_pd_windows": int((y_part == 1).sum()),
+        f"{prefix}_hc_subjects": int((subject_df["label"] == 0).sum()),
+        f"{prefix}_pd_subjects": int((subject_df["label"] == 1).sum()),
+    }
+
+
+def _subjects_with_multiple_labels(y, groups): # checks if one subject has both labels
+    df = pd.DataFrame({
+        "subject_key": np.asarray(groups).astype(str),
+        "label": np.asarray(y).astype(int),
+    })
+
+    label_counts = df.groupby("subject_key")["label"].nunique()
+    bad_subjects = label_counts[label_counts > 1].index.tolist()
+    return bad_subjects
+
+
+def _check_subject_leakage(groups, split_indices): # checks if one subject appears in more than one split
+    groups = np.asarray(groups).astype(str)
+
+    split_subjects = {}
+    for split_name, indices in split_indices.items():
+        split_subjects[split_name] = set(groups[indices])
+
+    overlaps = []
+
+    split_names = list(split_subjects.keys())
+    for i in range(len(split_names)):
+        for j in range(i + 1, len(split_names)):
+            a = split_names[i]
+            b = split_names[j]
+            common = sorted(split_subjects[a].intersection(split_subjects[b]))
+
+            if common:
+                overlaps.append({
+                    "split_a": a,
+                    "split_b": b,
+                    "subjects": common,
+                })
+
+    return overlaps, split_subjects
+
+
+def _subject_list_metrics(split_subjects): # stores subject lists in metrics
+    out = {}
+
+    for split_name, subjects in split_subjects.items():
+        out[f"{split_name}_subject_keys"] = ", ".join(sorted(subjects))
+
+    return out
+
+
+def _binary_extra_metrics(y_true, pred): # computes extra binary classification metrics
+    cm = confusion_matrix(y_true, pred, labels=[0, 1])
+    tn, fp, fn, tp = cm.ravel()
+
+    sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+
+    return {
+        "balanced_accuracy": float(balanced_accuracy_score(y_true, pred)),
+        "sensitivity": float(sensitivity),
+        "specificity": float(specificity),
+    }
+
+
+def _probability_diagnostics(y_true, proba, prefix): # checks if pd probabilities are higher for real pd samples
+    y_true = np.asarray(y_true).astype(int)
+    proba = np.asarray(proba).astype(float)
+
+    hc_mask = y_true == 0
+    pd_mask = y_true == 1
+
+    mean_hc = float(np.mean(proba[hc_mask])) if hc_mask.any() else None
+    mean_pd = float(np.mean(proba[pd_mask])) if pd_mask.any() else None
+
+    auc = None
+    auc_if_flipped = None
+    if len(np.unique(y_true)) > 1:
+        auc = float(roc_auc_score(y_true, proba))
+        auc_if_flipped = float(roc_auc_score(y_true, 1.0 - proba))
+
+    return {
+        f"{prefix}_mean_proba_pd_for_true_hc": mean_hc,
+        f"{prefix}_mean_proba_pd_for_true_pd": mean_pd,
+        f"{prefix}_auc": auc,
+        f"{prefix}_auc_if_flipped": auc_if_flipped,
+        f"{prefix}_looks_inverted": bool(mean_pd is not None and mean_hc is not None and mean_pd < mean_hc),
+    }
+
+
 class EEGNetLite(nn.Module): # defines a neural network mode for eeg classification
     def __init__(self, n_channels: int, n_samples: int, dropout: float = 0.25): # nr of eeg channels, nr of time samples, dropout probability
         super().__init__()
@@ -415,15 +589,66 @@ class EEGNetLite(nn.Module): # defines a neural network mode for eeg classificat
         return x.squeeze(1) # removes unnecessary dimesnions for output to be a simple vector
 
 
+class SpectrogramCNN(nn.Module): # defines a compact cnn model for eeg spectrogram images
+    def __init__(self, in_channels: int, dropout: float = 0.45): # nr of eeg channels used as image channels
+        super().__init__()
+
+        self.features = nn.Sequential( # extracts visual time frequency patterns from spectrograms
+            nn.Conv2d(in_channels, 8, kernel_size=3, padding=1, bias=False), # first spectrogram pattern filters
+            nn.BatchNorm2d(8), # stabilizes training
+            nn.ReLU(), # non linear activation
+            nn.MaxPool2d(2), # reduces image size
+            nn.Dropout(dropout), # reduces overfitting
+
+            nn.Conv2d(8, 16, kernel_size=3, padding=1, bias=False), # deeper visual filters
+            nn.BatchNorm2d(16), # stabilizes training
+            nn.ReLU(), # non linear activation
+            nn.MaxPool2d(2), # reduces image size
+            nn.Dropout(dropout), # reduces overfitting
+
+            nn.Conv2d(16, 32, kernel_size=3, padding=1, bias=False), # higher level time frequency patterns
+            nn.BatchNorm2d(32), # stabilizes training
+            nn.ReLU(), # non linear activation
+            nn.AdaptiveAvgPool2d((2, 2)), # forces a fixed output size
+        )
+
+        self.classifier = nn.Sequential( # final binary classifier
+            nn.Flatten(), # converts feature maps into vector
+            nn.Linear(32 * 2 * 2, 32), # dense representation
+            nn.ReLU(), # non linear activation
+            nn.Dropout(dropout), # reduces overfitting
+            nn.Linear(32, 1), # final output logit
+        )
+
+    def forward(self, x): # defines how spectrogram images flow through network
+        x = self.features(x) # extracts spectrogram features
+        x = self.classifier(x) # predicts pd score
+        return x.squeeze(1) # removes unnecessary dimesnions for output to be a simple vector
+
+
 def _normalize_by_train(X_train, X_val, X_test): # normalizes training, validation and test data
-    mean = X_train.mean(axis=(0, 2), keepdims=True) # avg value of training data per eeg channel
-    std = X_train.std(axis=(0, 2), keepdims=True) # std of training data per eeg channel
+    if X_train.ndim == 3:
+        mean = X_train.mean(axis=(0, 2), keepdims=True) # avg value of training data per eeg channel
+        std = X_train.std(axis=(0, 2), keepdims=True) # std of training data per eeg channel
+    else:
+        mean = X_train.mean(axis=(0, 2, 3), keepdims=True) # avg value of training spectrograms per eeg channel
+        std = X_train.std(axis=(0, 2, 3), keepdims=True) # std of training spectrograms per eeg channel
+
     std[std < 1e-8] = 1.0 # avoids /0
 
     X_train = (X_train - mean) / std # z score normalization
     X_val = (X_val - mean) / std # same training avg and std to not leak info
     X_test = (X_test - mean) / std # same training stats
     return X_train, X_val, X_test
+
+
+def _predict_proba(model, X, device): # runs cnn prediction and returns pd probabilities
+    model.eval() # prediction mode
+    with torch.no_grad():
+        x = torch.tensor(X, dtype=torch.float32).to(device) # converts data to tensor
+        logits = model(x) # runs model
+        proba = torch.sigmoid(logits).cpu().numpy() # PD probabilities
+    return proba
 
 
 def train_raw_eeg_cnn(payloads: dict, config: dict | None = None): # trains and evaluates cnn model
@@ -446,19 +671,30 @@ def train_raw_eeg_cnn(payloads: dict, config: dict | None = None): # trains and 
     # nothc filter
     use_notch = bool(cfg.get("use_notch", RAW_USE_NOTCH))
     notch_freq = float(cfg.get("notch_freq", RAW_NOTCH_FREQ))
+    visual_height = int(cfg.get("visual_height", SPECTROGRAM_HEIGHT)) # spectrogram height
+    visual_width = int(cfg.get("visual_width", SPECTROGRAM_WIDTH)) # spectrogram width
 
-    # turns raw eeg files into data for model
-    X, y, groups, meta_df, summary, err = load_brainvision_windows(
-    # X: eeg windows, y: window labels, groups: subject or group ids, meta_df: window metadata, summary: info about ddataset, err: error msg
+    spectrogram_config = {
+        "window_sec": window_sec,
+        "step_sec": step_sec,
+        "max_windows_per_recording": max_windows,
+        "use_bandpass": use_bandpass,
+        "bandpass_low": l_freq,
+        "bandpass_high": h_freq,
+        "use_notch": use_notch,
+        "notch_freq": notch_freq,
+        "visual_height": visual_height,
+        "visual_width": visual_width,
+        "spectrogram_channel_mode": str(cfg.get("spectrogram_channel_mode", "mean")),
+        "spectrogram_nperseg": int(cfg.get("spectrogram_nperseg", 128)),
+        "spectrogram_overlap_ratio": float(cfg.get("spectrogram_overlap_ratio", 0.75)),
+    }
+
+    # turns raw eeg files into spectrogram images for model
+    X, y, groups, meta_df, summary, err = load_brainvision_spectrograms(
+    # X: spectrogram images, y: window labels, groups: subject or group ids, meta_df: window metadata, summary: info about ddataset, err: error msg
         payloads=payloads,
-        window_sec=window_sec,
-        step_sec=step_sec,
-        max_windows_per_recording=max_windows,
-        use_bandpass=use_bandpass,
-        l_freq=l_freq,
-        h_freq=h_freq,
-        use_notch=use_notch,
-        notch_freq=notch_freq,
+        config=spectrogram_config,
     )
     if err:
         return None, None, None, None, None, err
@@ -467,31 +703,56 @@ def train_raw_eeg_cnn(payloads: dict, config: dict | None = None): # trains and 
     if len(np.unique(y)) < 2:
         return None, None, None, None, None, "Need both classes (HC and PD) in the uploaded recordings."
 
-    # creates the first split
-    gss_test = GroupShuffleSplit(n_splits=1, test_size=TEST_SIZE, random_state=RANDOM_STATE) # GroupShuffleSplit so windows from one subject stay together
-    trainval_idx, test_idx = next(gss_test.split(X, y, groups))
+    bad_subjects = _subjects_with_multiple_labels(y, groups)
+    if bad_subjects:
+        return None, None, None, None, None, (
+            "Subject label inconsistency detected. These subjects have both HC and PD labels: "
+            + ", ".join(bad_subjects)
+        )
+
+    # creates a stratified subject-level test split
+    trainval_idx, test_idx = _stratified_group_split(
+        X,
+        y,
+        groups,
+        n_splits=4,
+        random_state=RANDOM_STATE,
+        fold_index=0,
+    )
 
     # divides data into training+validation and test
     X_trainval, X_test = X[trainval_idx], X[test_idx]
     y_trainval, y_test = y[trainval_idx], y[test_idx]
     groups_trainval = groups[trainval_idx]
 
-    # creates the second split
-    val_fraction = RAW_VAL_SIZE
-    gss_val = GroupShuffleSplit(n_splits=1, test_size=val_fraction, random_state=RANDOM_STATE)
-    train_idx_local, val_idx_local = next(gss_val.split(X_trainval, y_trainval, groups_trainval))
+    meta_trainval = meta_df.iloc[trainval_idx].copy().reset_index(drop=True)
+    meta_test = meta_df.iloc[test_idx].copy().reset_index(drop=True)
+
+    # creates a stratified subject-level validation split
+    train_idx_local, val_idx_local = _stratified_group_split(
+        X_trainval,
+        y_trainval,
+        groups_trainval,
+        n_splits=4,
+        random_state=RANDOM_STATE + 1,
+        fold_index=0,
+    )
 
     # divides data in trainig, validation, test
     X_train, X_val = X_trainval[train_idx_local], X_trainval[val_idx_local]
     y_train, y_val = y_trainval[train_idx_local], y_trainval[val_idx_local]
 
+    meta_val = meta_trainval.iloc[val_idx_local].copy().reset_index(drop=True)
+
+    # checks if train and validation contain both classes
+    if len(np.unique(y_train)) < 2:
+        return None, None, None, None, None, "Training split contains only one class. Try a different split or more data."
+
+    if len(np.unique(y_val)) < 2:
+        return None, None, None, None, None, "Validation split contains only one class. Try a different split or more data."
+
     # normalizes sets using training stats
     X_train, X_val, X_test = _normalize_by_train(X_train, X_val, X_test)
-
-    # adds an extra dimension bcs cnn expects data in 4d format
-    X_train = X_train[:, None, :, :]
-    X_val = X_val[:, None, :, :]
-    X_test = X_test[:, None, :, :]
 
     # chooses where the model will run
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -499,11 +760,12 @@ def train_raw_eeg_cnn(payloads: dict, config: dict | None = None): # trains and 
     # reproducibility
     torch.manual_seed(RANDOM_STATE)
     np.random.seed(RANDOM_STATE)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(RANDOM_STATE)
 
     # creates cnn model
-    model = EEGNetLite(
-        n_channels=X_train.shape[2], # nr of eeeg channels
-        n_samples=X_train.shape[3], # nr of time samples
+    model = SpectrogramCNN(
+        in_channels=X_train.shape[1], # nr of eeg channels used as spectrogram channels
         dropout=CNN_DROPOUT, # droupout value
     ).to(device) # moves it to chosen device
 
@@ -515,7 +777,7 @@ def train_raw_eeg_cnn(payloads: dict, config: dict | None = None): # trains and 
     # loss used for binary classification
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     # optimizer to update model weights during training
-    optimizer = torch.optim.Adam(
+    optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=CNN_LR,
         weight_decay=CNN_WEIGHT_DECAY,
@@ -539,12 +801,17 @@ def train_raw_eeg_cnn(payloads: dict, config: dict | None = None): # trains and 
     best_state = None # best model so far
     best_val_loss = float("inf") # best validation loss
     patience_left = CNN_PATIENCE # nr of epochs left before stopping
+    epochs_ran = 0
 
-    for _ in range(CNN_EPOCHS):
+    for epoch_idx in range(CNN_EPOCHS):
+        epochs_ran = epoch_idx + 1
         model.train() # enables training behaviour
         for xb, yb in train_loader:
             xb = xb.to(device) # moves batch to device
             yb = yb.to(device) # moves batch to device
+
+            if xb.shape[0] > 1:
+                xb = xb + torch.randn_like(xb) * 0.015 # light noise augmentation to reduce overfitting
 
             optimizer.zero_grad() # clears old gradients
             logits = model(xb) # runs model forward
@@ -569,18 +836,33 @@ def train_raw_eeg_cnn(payloads: dict, config: dict | None = None): # trains and 
     if best_state is not None: # after training ends
         model.load_state_dict(best_state) # best model is restored
 
-    model.eval() # prediction on test set
-    with torch.no_grad():
-        test_x = torch.tensor(X_test, dtype=torch.float32).to(device) # converts test data to tensor
-        logits = model(test_x) # runs model
-        proba = torch.sigmoid(logits).cpu().numpy() # PD probabilities for test windows
+    # chooses the decision threshold from subject-level validation probabilities instead of fixed 0.5
+    val_proba = _predict_proba(model, X_val, device)
 
-    pred = (proba >= 0.5).astype(int) # converts probabilities into final class label
+    val_subject_df = meta_val[["subject_key", "label"]].copy()
+    val_subject_df["proba_pd"] = val_proba.astype(float)
+    val_subject_pred_df = subject_aggregate(val_subject_df)
+
+    y_val_subject = val_subject_pred_df["label"].astype(int).values
+    proba_val_subject = val_subject_pred_df["proba_pd"].astype(float).values
+
+    threshold = safe_threshold(y_val_subject, proba_val_subject)
+
+    val_subject_auc = None
+    try:
+        val_subject_auc = float(roc_auc_score(y_val_subject, proba_val_subject))
+    except Exception:
+        pass
+
+    # prediction on test set
+    proba = _predict_proba(model, X_test, device)
+    pred = (proba >= threshold).astype(int) # converts probabilities into final class label
 
     # evaluation metrics
     acc = float(accuracy_score(y_test, pred))
-    f1 = float(f1_score(y_test, pred))
-    cm = confusion_matrix(y_test, pred).tolist()
+    f1 = float(f1_score(y_test, pred, zero_division=0))
+    cm = confusion_matrix(y_test, pred, labels=[0, 1]).tolist()
+    extra_binary = _binary_extra_metrics(y_test, pred)
 
     # auc and roc curve
     auc = None
@@ -593,16 +875,90 @@ def train_raw_eeg_cnn(payloads: dict, config: dict | None = None): # trains and 
         pass
 
     # test prediction metadata
-    test_meta = meta_df.iloc[test_idx].copy().reset_index(drop=True) # original metadata
+    test_meta = meta_test.copy().reset_index(drop=True) # original metadata
     test_meta["true_label"] = y_test.astype(int) # true label
     test_meta["pred_label"] = pred.astype(int) # predicted label
     test_meta["proba_pd"] = proba.astype(float) # PD probability
     test_meta["proba_hc"] = (1.0 - proba).astype(float) # HC probability
+    test_meta["threshold"] = float(threshold) # threshold selected from validation set
+
+    # computes subject level metrics by averaging window probabilities per subject
+    subject_df = test_meta[["subject_key", "label", "proba_pd"]].copy()
+    subject_pred_df = subject_aggregate(subject_df)
+    y_subject = subject_pred_df["label"].astype(int).values
+    proba_subject = subject_pred_df["proba_pd"].astype(float).values
+    pred_subject = (proba_subject >= threshold).astype(int)
+
+    subject_acc = float(accuracy_score(y_subject, pred_subject)) if len(y_subject) else None
+    subject_f1 = float(f1_score(y_subject, pred_subject, zero_division=0)) if len(y_subject) else None
+    subject_cm = confusion_matrix(y_subject, pred_subject, labels=[0, 1]).tolist() if len(y_subject) else None
+    subject_extra_binary = _binary_extra_metrics(y_subject, pred_subject) if len(y_subject) else {}
+
+    subject_auc = None
+    try:
+        subject_auc = float(roc_auc_score(y_subject, proba_subject))
+    except Exception:
+        pass
+
+    prediction_counts = pd.Series(pred).value_counts().to_dict()
+    subject_prediction_counts = pd.Series(pred_subject).value_counts().to_dict()
+
+    train_global_idx = trainval_idx[train_idx_local]
+    val_global_idx = trainval_idx[val_idx_local]
+    test_global_idx = test_idx
+
+    leakage_overlaps, split_subjects = _check_subject_leakage(
+        groups,
+        {
+            "train": train_global_idx,
+            "val": val_global_idx,
+            "test": test_global_idx,
+        }
+    )
+
+    if leakage_overlaps:
+        messages = []
+        for item in leakage_overlaps:
+            messages.append(
+                f"{item['split_a']} vs {item['split_b']}: {', '.join(item['subjects'])}"
+            )
+
+        return None, None, None, None, None, (
+            "Subject leakage detected between splits: " + " | ".join(messages)
+        )
+
+    split_metrics = {}
+    split_metrics.update(_split_info(y, groups, train_global_idx, "train"))
+    split_metrics.update(_split_info(y, groups, val_global_idx, "val"))
+    split_metrics.update(_split_info(y, groups, test_global_idx, "test"))
+    split_metrics.update(_subject_list_metrics(split_subjects))
+    split_metrics["subject_leakage_detected"] = False
+
+    window_diagnostics = _probability_diagnostics(y_test, proba, "window")
+    subject_diagnostics = _probability_diagnostics(y_subject, proba_subject, "subject")
 
     metrics = {
         "accuracy": acc,
         "f1": f1,
         "auc": auc,
+        "balanced_accuracy": extra_binary["balanced_accuracy"],
+        "sensitivity": extra_binary["sensitivity"],
+        "specificity": extra_binary["specificity"],
+        "subject_accuracy": subject_acc,
+        "subject_f1": subject_f1,
+        "subject_auc": subject_auc,
+        "subject_balanced_accuracy": subject_extra_binary.get("balanced_accuracy"),
+        "subject_sensitivity": subject_extra_binary.get("sensitivity"),
+        "subject_specificity": subject_extra_binary.get("specificity"),
+        "subject_confusion_matrix": subject_cm,
+        "val_subject_auc": val_subject_auc,
+        "threshold": float(threshold),
+        "epochs_ran": int(epochs_ran),
+        "best_val_loss": float(best_val_loss),
+        "prediction_hc_windows": int(prediction_counts.get(0, 0)),
+        "prediction_pd_windows": int(prediction_counts.get(1, 0)),
+        "prediction_hc_subjects": int(subject_prediction_counts.get(0, 0)),
+        "prediction_pd_subjects": int(subject_prediction_counts.get(1, 0)),
         "n_windows_total": int(summary["n_windows"]),
         "n_windows_train": int(len(X_train)),
         "n_windows_val": int(len(X_val)),
@@ -610,9 +966,18 @@ def train_raw_eeg_cnn(payloads: dict, config: dict | None = None): # trains and 
         "n_subjects": int(summary["n_subjects"]),
         "n_recordings": int(summary["n_recordings"]),
         "n_channels": int(summary["n_channels"]),
+        "cnn_input_channels": int(X.shape[1]),
         "window_samples": int(summary["window_samples"]),
         "sampling_rate": float(summary["sampling_rate"]) if summary["sampling_rate"] is not None else None,
-        "model": "EEGNetLite",
+        "visual_height": int(summary.get("visual_height", visual_height)),
+        "visual_width": int(summary.get("visual_width", visual_width)),
+        "spectrogram_channel_mode": str(summary.get("spectrogram_channel_mode", spectrogram_config["spectrogram_channel_mode"])),
+        "input_type": "spectrogram",
+        "model": "CompactSpectrogramCNN",
     }
+
+    metrics.update(split_metrics)
+    metrics.update(window_diagnostics)
+    metrics.update(subject_diagnostics)
 
     return metrics, cm, roc, model, test_meta, None
