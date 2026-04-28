@@ -2,6 +2,7 @@ import streamlit as st
 
 from src.actions import (
     run_train_cnn,
+    run_train_cnn_group_cv,
     run_train_svm,
     run_train_svm_group_cv,
 )
@@ -48,3 +49,6 @@ def sidebar_nav():
 
     if st.sidebar.button("Run SVM Group CV", use_container_width=True):
         run_train_svm_group_cv()
+
+    if st.sidebar.button("Run CNN Group CV", use_container_width=True):
+        run_train_cnn_group_cv()

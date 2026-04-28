@@ -6,6 +6,7 @@ import streamlit as st
 
 from src.actions import (
     run_train_cnn,
+    run_train_cnn_group_cv,
     run_train_svm,
     run_train_svm_group_cv,
 )
@@ -22,7 +23,11 @@ from src.config import (
     SPECTROGRAM_WIDTH,
 )
 from src.data_utils import dataset_summary, parse_csv, parse_iowa_mat
-from src.raw_eeg import build_brainvision_payload, load_brainvision_recording_preview
+from src.raw_eeg import (
+    build_brainvision_payload,
+    load_brainvision_feature_table,
+    load_brainvision_recording_preview,
+)
 from src.state import log, set_status
 from src.storage import load_runs, save_run
 from src.ui.components import plot_cm, plot_roc, status_dot
@@ -147,6 +152,9 @@ def render_dashboard():
         if st.button("Run SVM Group CV", use_container_width=True, disabled=not tabular_ok):
             run_train_svm_group_cv()
 
+        if st.button("Run CNN Group CV", use_container_width=True, disabled=not raw_ok):
+            run_train_cnn_group_cv()
+
         st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
 
         if st.button("Open Raw EEG Viewer", use_container_width=True, disabled=not raw_ok):
@@ -200,20 +208,20 @@ def render_import():
         raw_loaded = current_raw_manifest_df is not None
         raw_recordings = int(current_raw_manifest_df["recording"].nunique()) if raw_loaded else 0
         raw_subjects = int(current_raw_manifest_df["subject_key"].nunique()) if raw_loaded else 0
-        raw_complete = int(current_raw_manifest_df["complete_triplet"].sum()) if raw_loaded else 0
+        raw_complete = int(current_raw_manifest_df["complete_recording"].sum()) if raw_loaded else 0
 
         st.markdown(
             f"""
             <div class="card">
               <div class="card-title">
                 <div style="font-weight:800; font-size:1.0rem;">Raw EEG import for CNN</div>
-                <div class="subtle">BrainVision files: .vhdr, .eeg, .vmrk</div>
+                <div class="subtle">EEGLAB .set/.fdt files or BrainVision .vhdr/.eeg/.vmrk files</div>
               </div>
               <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">
                 <span class="pill">Status: <b style="color:var(--txt)">{'Loaded' if raw_loaded else 'Not loaded'}</b></span>
                 <span class="pill">Recordings: <b style="color:var(--txt)">{raw_recordings}</b></span>
                 <span class="pill">Subjects: <b style="color:var(--txt)">{raw_subjects}</b></span>
-                <span class="pill">Complete triplets: <b style="color:var(--txt)">{raw_complete}</b></span>
+                <span class="pill">Complete recordings: <b style="color:var(--txt)">{raw_complete}</b></span>
               </div>
             </div>
             """,
@@ -224,11 +232,14 @@ def render_import():
 
         # for file upload
         uploaded_raw_files = st.file_uploader(
-            "Upload BrainVision files",
-            type=["vhdr", "eeg", "vmrk"],
+            "Upload raw EEG files",
+            type=["set", "fdt", "tsv", "csv", "vhdr", "eeg", "vmrk"],
             accept_multiple_files=True,
             key="raw_eeg_uploader",
-            help="Select all .vhdr, .eeg and .vmrk files used by the raw EEG CNN.",
+            help=(
+                "For the new dataset, upload all .set and .fdt files plus participants.tsv if available. "
+                "BrainVision .vhdr/.eeg/.vmrk files are still supported."
+            ),
         )
 
         raw_name = st.text_input(
@@ -266,12 +277,12 @@ def render_import():
 
                 set_status("Ready")
                 log(
-                    f"Raw BrainVision dataset loaded: {raw_name.strip() or 'brainvision_raw_eeg'} "
+                    f"Raw EEG dataset loaded: {raw_name.strip() or 'raw_eeg'} "
                     f"({summary['n_recordings']} recordings)",
                     now_iso
                 )
                 save_run(
-                    action="import_raw_brainvision",
+                    action="import_raw_eeg",
                     status="Ready",
                     metrics={
                         "n_recordings": summary["n_recordings"],
@@ -292,8 +303,49 @@ def render_import():
                 st.session_state.page = "Raw EEG Viewer"
                 st.rerun()
 
+            if st.button(
+                "Generate SVM features from loaded raw EEG",
+                use_container_width=True,
+                key="generate_svm_from_raw_eeg",
+            ):
+                df_features, feature_summary, feature_err = load_brainvision_feature_table(
+                    st.session_state.raw_file_payloads,
+                    config=st.session_state.preprocessing_summary,
+                )
+
+                if feature_err:
+                    set_status("Error")
+                    log(f"Raw EEG feature generation failed: {feature_err}", now_iso)
+                    st.error(feature_err)
+                else:
+                    st.session_state.dataset_df = df_features
+                    st.session_state.dataset_name = f"{st.session_state.raw_dataset_name or 'raw_eeg'}_features"
+                    st.session_state.dataset_source = "raw_eeg_features"
+                    st.session_state.last_group_cv_predictions = None
+
+                    set_status("Ready")
+                    log(
+                        f"SVM feature table generated from raw EEG "
+                        f"({feature_summary.get('n_rows')} rows, {feature_summary.get('n_features')} features).",
+                        now_iso,
+                    )
+
+                    save_run(
+                        action="generate_svm_features_from_raw_eeg",
+                        status="Ready",
+                        metrics={
+                            "rows": feature_summary.get("n_rows"),
+                            "features": feature_summary.get("n_features"),
+                            "subjects": feature_summary.get("n_subjects"),
+                            "recordings": feature_summary.get("n_recordings"),
+                        },
+                    )
+
+                    st.success("SVM feature table generated from raw EEG.")
+                    st.rerun()
+
             incomplete_df = st.session_state.raw_manifest_df[
-                ~st.session_state.raw_manifest_df["complete_triplet"]
+                ~st.session_state.raw_manifest_df["complete_recording"]
             ]
             if not incomplete_df.empty:
                 st.warning("Some recordings are incomplete and will not be usable.")
@@ -453,7 +505,7 @@ def render_import():
             <div class="subtle">Choose the right import depending on the model</div>
           </div>
           <div class="small" style="margin-top:8px;">
-            - Use <b>Raw EEG import</b> for <b>Train CNN</b><br/>
+            - Use <b>Raw EEG import</b> for <b>Train CNN</b> and <b>Run CNN Group CV</b><br/>
             - Use <b>CSV import</b> if you already have a ready tabular dataset for <b>SVM</b><br/>
             - Use <b>Iowa .mat import</b> if you want the app to generate the SVM dataset using the saved preprocessing config
           </div>
@@ -648,7 +700,7 @@ def render_preprocess():
             <div class="card">
               <div class="card-title">
                 <div style="font-weight:800; font-size:1.05rem;">Current config</div>
-                <div class="subtle">Used by Train CNN and by MAT → SVM feature generation</div>
+                <div class="subtle">Used by Train CNN, Run CNN Group CV and by MAT → SVM feature generation</div>
               </div>
             </div>
             """,
@@ -673,7 +725,7 @@ def render_preprocess():
                 <div class="subtle">What this page does</div>
               </div>
               <div class="small">
-                - Used by <b>Train CNN</b><br/>
+                - Used by <b>Train CNN</b> and <b>Run CNN Group CV</b><br/>
                 - Also used when converting <b>Iowa .mat</b> into a tabular dataset for <b>SVM</b><br/>
                 - Applies optional notch and band-pass filtering<br/>
                 - Segments data into fixed windows<br/>
@@ -702,6 +754,7 @@ def get_last_model_display_name(): # returns the name of the last trained model
         "cnn": "CNN",
         "svm": "SVM",
         "svm_group_cv": "SVM Group CV",
+        "cnn_group_cv": "CNN Group CV",
         "cnn_raw_eeg": "CNN",
     }
 
@@ -751,8 +804,8 @@ def render_results():
     if not metrics:
         st.info("No metrics yet. Train a model first.")
     else:
-        # svm group cv metrics
-        if st.session_state.last_action == "svm_group_cv":
+        # svm/cnn group cv metrics
+        if st.session_state.last_action in ["svm_group_cv", "cnn_group_cv"]:
             st.markdown("**Subject-level mean performance (Group CV)**")
             mcols = st.columns(3)
 
@@ -766,6 +819,24 @@ def render_results():
                 st.metric("Subject F1", "-" if f1 is None else f"{f1:.3f}")
             with mcols[2]:
                 st.metric("Subject AUC", "-" if auc is None else f"{auc:.3f}")
+
+            mcols_std = st.columns(3)
+
+            acc_std = metrics.get("subject_acc_std", None)
+            f1_std = metrics.get("subject_f1_std", None)
+            auc_std = metrics.get("subject_auc_std", None)
+
+            with mcols_std[0]:
+                st.metric("Subject Accuracy STD", "-" if acc_std is None else f"{acc_std:.3f}")
+            with mcols_std[1]:
+                st.metric("Subject F1 STD", "-" if f1_std is None else f"{f1_std:.3f}")
+            with mcols_std[2]:
+                st.metric("Subject AUC STD", "-" if auc_std is None else f"{auc_std:.3f}")
+
+            fold_details = metrics.get("fold_details", [])
+            if fold_details:
+                with st.expander("Fold details", expanded=False):
+                    st.dataframe(pd.DataFrame(fold_details), use_container_width=True, hide_index=True)
         else:
             # cnn and svm common metrivcs
             mcols = st.columns(3)
@@ -866,15 +937,46 @@ def render_results():
 
             st.dataframe(pd.DataFrame(split_rows), use_container_width=True, hide_index=True)
 
+        if st.session_state.last_action == "cnn_group_cv":
+            st.markdown("**CNN Group CV diagnostic checks**")
+            diag_cols = st.columns(4)
+
+            with diag_cols[0]:
+                v = metrics.get("window_cv_mean_proba_pd_for_true_hc", None)
+                st.metric("Mean PD prob | true HC", "-" if v is None else f"{v:.3f}")
+
+            with diag_cols[1]:
+                v = metrics.get("window_cv_mean_proba_pd_for_true_pd", None)
+                st.metric("Mean PD prob | true PD", "-" if v is None else f"{v:.3f}")
+
+            with diag_cols[2]:
+                v = metrics.get("val_subject_auc_mean", None)
+                st.metric("Val subject AUC mean", "-" if v is None else f"{v:.3f}")
+
+            with diag_cols[3]:
+                v = metrics.get("subject_cv_auc_if_flipped", None)
+                st.metric("Subject AUC if flipped", "-" if v is None else f"{v:.3f}")
+
+            if metrics.get("subject_cv_looks_inverted", False):
+                st.warning(
+                    "Across CV folds, the model gives higher PD probabilities to HC subjects than to PD subjects. "
+                    "Check label detection in the raw EEG manifest and inspect filenames."
+                )
+
+            st.success(
+                "CNN Group CV uses subject-level outer folds and an inner subject-level validation split. "
+                "No subject leakage was detected."
+            )
+
         if "error" in metrics:
             st.error(metrics["error"])
 
         # extra info for cnn
-        if st.session_state.last_action == "cnn":
+        if st.session_state.last_action in ["cnn", "cnn_group_cv"]:
             st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
             extra_cols = st.columns(6)
             with extra_cols[0]:
-                st.metric("Subjects", str(metrics.get("n_subjects", "-")))
+                st.metric("Subjects", str(metrics.get("n_subjects", metrics.get("subjects", "-"))))
             with extra_cols[1]:
                 st.metric("Recordings", str(metrics.get("n_recordings", "-")))
             with extra_cols[2]:
@@ -884,7 +986,7 @@ def render_results():
             with extra_cols[4]:
                 st.metric("Spectrogram", f"{metrics.get('visual_height', '-')} x {metrics.get('visual_width', '-')}")
             with extra_cols[5]:
-                threshold = metrics.get("threshold", None)
+                threshold = metrics.get("threshold", metrics.get("threshold_mean", None))
                 st.metric("Threshold", "-" if threshold is None else f"{threshold:.3f}")
 
     st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
@@ -904,7 +1006,7 @@ def render_results():
     st.markdown("<div style='height:5px;'></div>", unsafe_allow_html=True)
 
     # two cms for group cv, one subject level and one window level
-    if st.session_state.last_action == "svm_group_cv":
+    if st.session_state.last_action in ["svm_group_cv", "cnn_group_cv"]:
         viz1, viz2 = st.columns(2, gap="large")
 
         with viz1:
@@ -1072,12 +1174,12 @@ def render_results():
             except Exception as e:
                 st.error(f"Could not generate sample prediction: {e}")
 
-    # sample prediction for svm group cv
-    elif st.session_state.last_action == "svm_group_cv":
+    # sample prediction for svm/cnn group cv
+    elif st.session_state.last_action in ["svm_group_cv", "cnn_group_cv"]:
         pred_df = st.session_state.last_group_cv_predictions
 
         if pred_df is None or pred_df.empty:
-            st.info("Sample prediction is available after Run SVM Group CV.")
+            st.info("Sample prediction is available after running Group CV.")
         else:
             sample_idx = st.number_input(
                 "Select sample index",
@@ -1180,17 +1282,17 @@ def render_raw_viewer():
     st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
 
     if st.session_state.raw_manifest_df is None or not st.session_state.raw_file_payloads: # checks if raw eeg data was loaded
-        st.info("Load a raw EEG BrainVision dataset first from the Import page.")
+        st.info("Load a raw EEG dataset first from the Import page.")
         if st.button("Go to Import", use_container_width=False):
             st.session_state.page = "Import"
             st.rerun()
         return
 
     manifest_df = st.session_state.raw_manifest_df.copy() # contains info about uploaded recordinggs
-    complete_df = manifest_df[manifest_df["complete_triplet"]].copy() # only keeps recordings with a full triplet
+    complete_df = manifest_df[manifest_df["complete_recording"]].copy() # only keeps recordings with a full triplet
 
     if complete_df.empty:
-        st.warning("No complete BrainVision recordings are available for visualization.")
+        st.warning("No complete raw EEG recordings are available for visualization.")
         return
 
     left, right = st.columns([0.9, 1.1], gap="large")
@@ -1259,7 +1361,11 @@ def render_raw_viewer():
         )
 
         st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
-        preview_df = complete_df[["recording", "subject_key", "label_guess"]].copy()
+        preview_cols = [
+            c for c in ["recording", "source_format", "subject_key", "label_guess", "label_source"]
+            if c in complete_df.columns
+        ]
+        preview_df = complete_df[preview_cols].copy()
         st.dataframe(preview_df, use_container_width=True, hide_index=True)
 
     with right:
