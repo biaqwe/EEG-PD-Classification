@@ -21,6 +21,9 @@ from src.config import (
     RAW_USE_NOTCH,
     SPECTROGRAM_HEIGHT,
     SPECTROGRAM_WIDTH,
+    SPECTROGRAM_NPERSEG,
+    SPECTROGRAM_OVERLAP_RATIO,
+    SPECTROGRAM_CHANNEL_MODE,
 )
 from src.data_utils import dataset_summary, parse_csv, parse_iowa_mat
 from src.raw_eeg import (
@@ -544,6 +547,9 @@ def render_preprocess():
         "bandpass_high": float(RAW_H_FREQ),
         "visual_height": int(SPECTROGRAM_HEIGHT),
         "visual_width": int(SPECTROGRAM_WIDTH),
+        "spectrogram_channel_mode": str(SPECTROGRAM_CHANNEL_MODE),
+        "spectrogram_nperseg": int(SPECTROGRAM_NPERSEG),
+        "spectrogram_overlap_ratio": float(SPECTROGRAM_OVERLAP_RATIO),
     }
 
     with left:
@@ -620,6 +626,36 @@ def render_preprocess():
                 step=16
             )
 
+        channel_options = ["mean", "regions", "all"]
+        current_channel_mode = str(default_cfg.get("spectrogram_channel_mode", SPECTROGRAM_CHANNEL_MODE)).lower()
+        if current_channel_mode not in channel_options:
+            current_channel_mode = "regions"
+
+        c9, c10 = st.columns(2)
+        with c9:
+            spectrogram_channel_mode = st.selectbox(
+                "Spectrogram channel mode",
+                options=channel_options,
+                index=channel_options.index(current_channel_mode),
+                help="regions is recommended; all uses much more RAM; mean is fastest but loses electrode information."
+            )
+        with c10:
+            spectrogram_nperseg = st.number_input(
+                "Spectrogram nperseg",
+                min_value=32,
+                max_value=512,
+                value=int(default_cfg.get("spectrogram_nperseg", SPECTROGRAM_NPERSEG)),
+                step=32
+            )
+
+        spectrogram_overlap_ratio = st.slider(
+            "Spectrogram overlap ratio",
+            min_value=0.0,
+            max_value=0.9,
+            value=float(default_cfg.get("spectrogram_overlap_ratio", SPECTROGRAM_OVERLAP_RATIO)),
+            step=0.05
+        )
+
         # saves current config settings
         if st.button("Save preprocessing config", use_container_width=True):
             new_summary = {
@@ -633,6 +669,9 @@ def render_preprocess():
                 "bandpass_high": float(bandpass_high),
                 "visual_height": int(visual_height),
                 "visual_width": int(visual_width),
+                "spectrogram_channel_mode": str(spectrogram_channel_mode),
+                "spectrogram_nperseg": int(spectrogram_nperseg),
+                "spectrogram_overlap_ratio": float(spectrogram_overlap_ratio),
             }
 
             config_changed = st.session_state.preprocessing_summary != new_summary
@@ -647,6 +686,9 @@ def render_preprocess():
                 f"Use bandpass: {use_bandpass}",
                 f"Bandpass: {bandpass_low} - {bandpass_high} Hz",
                 f"Spectrogram size: {visual_height} x {visual_width}",
+                f"Spectrogram channel mode: {spectrogram_channel_mode}",
+                f"Spectrogram nperseg: {spectrogram_nperseg}",
+                f"Spectrogram overlap ratio: {spectrogram_overlap_ratio}",
             ]
 
             if config_changed:

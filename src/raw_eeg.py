@@ -1,6 +1,8 @@
 import io
+import os
 import re
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -416,7 +418,42 @@ def _resize_2d(arr: np.ndarray, out_h: int, out_w: int): # resizes one spectrogr
     return resized.astype(np.float32)
 
 
-def _window_to_spectrogram(window: np.ndarray, sfreq: float, config: dict | None = None): # converts one eeg window to a spectrogram image tensor
+def _channel_region(name: str):
+    text = str(name).strip().lower()
+    text = re.sub(r"[^a-z0-9]+", "", text)
+
+    if text.startswith(("fp", "af", "f")) and not text.startswith("ft"):
+        return "frontal"
+    if text.startswith(("fc", "c")):
+        return "central"
+    if text.startswith(("cp", "p")) and not text.startswith("po"):
+        return "parietal"
+    if text.startswith(("po", "o")):
+        return "occipital"
+    if text.startswith(("t", "ft", "tp")):
+        return "temporal"
+    return "other"
+
+
+def _spectrogram_regions(pxx: np.ndarray, channel_names=None):
+    if channel_names is None or len(channel_names) != pxx.shape[0]:
+        return np.mean(pxx, axis=0, keepdims=True)
+
+    region_order = ["frontal", "central", "parietal", "occipital", "temporal"]
+    region_arrays = []
+
+    for region in region_order:
+        idx = [i for i, name in enumerate(channel_names) if _channel_region(name) == region]
+        if idx:
+            region_arrays.append(np.mean(pxx[idx], axis=0))
+
+    if not region_arrays:
+        return np.mean(pxx, axis=0, keepdims=True)
+
+    return np.stack(region_arrays, axis=0).astype(np.float32)
+
+
+def _window_to_spectrogram(window: np.ndarray, sfreq: float, config: dict | None = None, channel_names=None): # converts one eeg window to a spectrogram image tensor
     try:
         from scipy.signal import spectrogram
     except Exception:
@@ -448,8 +485,12 @@ def _window_to_spectrogram(window: np.ndarray, sfreq: float, config: dict | None
             pxx = pxx[:, freq_mask, :]
 
     pxx = np.log10(pxx.astype(np.float32) + 1e-12) # log-power spectrogram
-    if cfg["spectrogram_channel_mode"] == "mean": # averages all eeg channels into one spectrogram image
+    channel_mode = str(cfg["spectrogram_channel_mode"]).lower()
+
+    if channel_mode == "mean":
         pxx = np.mean(pxx, axis=0, keepdims=True)
+    elif channel_mode == "regions":
+        pxx = _spectrogram_regions(pxx, channel_names)
 
     channels = []
     for ch_idx in range(pxx.shape[0]):
@@ -543,7 +584,9 @@ def load_brainvision_windows( # prepares raw eeg windows for cnn training
 
             # only max nr of windows per recording are kept
             if max_windows_per_recording is not None and len(starts) > max_windows_per_recording:
-                starts = starts[:max_windows_per_recording]
+                selected_idx = np.linspace(0, len(starts) - 1, int(max_windows_per_recording))
+                selected_idx = np.unique(np.round(selected_idx).astype(int))
+                starts = [starts[int(idx)] for idx in selected_idx]
 
             for i, start in enumerate(starts):
                 # slices one eeg sig from all channels
@@ -633,11 +676,21 @@ def load_brainvision_spectrograms(payloads: dict, config: dict | None = None): #
     sfreq = float(summary["sampling_rate"])
     spec_list = [] # spectrogram tensors
 
-    for window in X_windows:
-        spec = _window_to_spectrogram(window, sfreq=sfreq, config=cfg)
-        if spec is None:
-            return None, None, None, None, None, "Could not generate spectrograms. Make sure scipy is installed."
-        spec_list.append(spec)
+    channel_names = summary.get("channel_names", [])
+    workers = int(cfg.get("spectrogram_workers", min(4, max(1, os.cpu_count() or 1))))
+
+    if workers > 1 and len(X_windows) > 1:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            spec_list = list(executor.map(
+                lambda window: _window_to_spectrogram(window, sfreq=sfreq, config=cfg, channel_names=channel_names),
+                X_windows,
+            ))
+    else:
+        for window in X_windows:
+            spec_list.append(_window_to_spectrogram(window, sfreq=sfreq, config=cfg, channel_names=channel_names))
+
+    if any(spec is None for spec in spec_list):
+        return None, None, None, None, None, "Could not generate spectrograms. Make sure scipy is installed."
 
     X = np.stack(spec_list, axis=0).astype(np.float32) # shape: samples x channels x height x width
 

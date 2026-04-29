@@ -52,11 +52,31 @@ except Exception:
 try:
     import torch
     import torch.nn as nn
-    from torch.utils.data import DataLoader, TensorDataset
+    from torch.utils.data import DataLoader, TensorDataset, WeightedRandomSampler
 
     TORCH_OK = True
 except Exception:
     TORCH_OK = False
+
+
+def _torch_device():
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
+def _balanced_sampler(y):
+    y = np.asarray(y).astype(int)
+    counts = np.bincount(y, minlength=2).astype(float)
+    counts[counts == 0] = 1.0
+    weights = 1.0 / counts[y]
+    return WeightedRandomSampler(
+        weights=torch.tensor(weights, dtype=torch.double),
+        num_samples=len(weights),
+        replacement=True,
+    )
 
 
 def build_svm_pipeline(k_best=100, random_state=RANDOM_STATE): # creates pipeline for training svm
@@ -156,7 +176,7 @@ def subject_aggregate(df_fold: pd.DataFrame): # combines multiple window predict
     )
 
 
-def safe_threshold(y_true, proba): # computes classification threshold based on validation data
+def safe_threshold(y_true, proba):
     y_true = np.asarray(y_true).astype(int)
     proba = np.asarray(proba).astype(float)
 
@@ -166,31 +186,35 @@ def safe_threshold(y_true, proba): # computes classification threshold based on 
     candidates = np.unique(
         np.concatenate([
             np.array([0.5]),
-            np.linspace(0.20, 0.80, 31),
+            np.linspace(0.35, 0.80, 91),
             proba,
         ])
     )
 
     best_threshold = 0.5
-    best_score = -1.0
-    best_has_two_classes = False
+    best_score = -1e9
 
     for threshold in candidates:
-        threshold = float(np.clip(threshold, 0.05, 0.95))
+        threshold = float(np.clip(threshold, 0.35, 0.85))
         pred = (proba >= threshold).astype(int)
 
-        has_two_classes = len(np.unique(pred)) == 2
-        f1 = f1_score(y_true, pred, zero_division=0)
-        bacc = balanced_accuracy_score(y_true, pred)
-        score = f1 + bacc
+        if len(np.unique(pred)) < 2:
+            continue
 
-        if has_two_classes and not best_has_two_classes:
-            best_threshold = threshold
+        cm = confusion_matrix(y_true, pred, labels=[0, 1])
+        tn, fp, fn, tp = cm.ravel()
+
+        sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+        bacc = balanced_accuracy_score(y_true, pred)
+        acc = accuracy_score(y_true, pred)
+        f1 = f1_score(y_true, pred, zero_division=0)
+
+        score = (0.65 * bacc) + (0.25 * acc) + (0.10 * f1) - (0.10 * abs(sensitivity - specificity))
+
+        if score > best_score:
             best_score = score
-            best_has_two_classes = True
-        elif has_two_classes == best_has_two_classes and score > best_score:
             best_threshold = threshold
-            best_score = score
 
     return float(best_threshold)
 
@@ -589,41 +613,43 @@ class EEGNetLite(nn.Module): # defines a neural network mode for eeg classificat
         return x.squeeze(1) # removes unnecessary dimesnions for output to be a simple vector
 
 
-class SpectrogramCNN(nn.Module): # defines a compact cnn model for eeg spectrogram images
-    def __init__(self, in_channels: int, dropout: float = 0.45): # nr of eeg channels used as image channels
+class SpectrogramCNN(nn.Module):
+    def __init__(self, in_channels: int, dropout: float = 0.35):
         super().__init__()
 
-        self.features = nn.Sequential( # extracts visual time frequency patterns from spectrograms
-            nn.Conv2d(in_channels, 8, kernel_size=3, padding=1, bias=False), # first spectrogram pattern filters
-            nn.BatchNorm2d(8), # stabilizes training
-            nn.ReLU(), # non linear activation
-            nn.MaxPool2d(2), # reduces image size
-            nn.Dropout(dropout), # reduces overfitting
+        self.features = nn.Sequential(
+            nn.BatchNorm2d(in_channels),
 
-            nn.Conv2d(8, 16, kernel_size=3, padding=1, bias=False), # deeper visual filters
-            nn.BatchNorm2d(16), # stabilizes training
-            nn.ReLU(), # non linear activation
-            nn.MaxPool2d(2), # reduces image size
-            nn.Dropout(dropout), # reduces overfitting
+            nn.Conv2d(in_channels, 16, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(16),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Dropout2d(dropout * 0.5),
 
-            nn.Conv2d(16, 32, kernel_size=3, padding=1, bias=False), # higher level time frequency patterns
-            nn.BatchNorm2d(32), # stabilizes training
-            nn.ReLU(), # non linear activation
-            nn.AdaptiveAvgPool2d((2, 2)), # forces a fixed output size
+            nn.Conv2d(16, 32, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Dropout2d(dropout * 0.5),
+
+            nn.Conv2d(32, 64, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool2d((4, 4)),
         )
 
-        self.classifier = nn.Sequential( # final binary classifier
-            nn.Flatten(), # converts feature maps into vector
-            nn.Linear(32 * 2 * 2, 32), # dense representation
-            nn.ReLU(), # non linear activation
-            nn.Dropout(dropout), # reduces overfitting
-            nn.Linear(32, 1), # final output logit
+        self.classifier = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(64 * 4 * 4, 64),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(64, 1),
         )
 
-    def forward(self, x): # defines how spectrogram images flow through network
-        x = self.features(x) # extracts spectrogram features
-        x = self.classifier(x) # predicts pd score
-        return x.squeeze(1) # removes unnecessary dimesnions for output to be a simple vector
+    def forward(self, x):
+        x = self.features(x)
+        x = self.classifier(x)
+        return x.squeeze(1)
 
 
 def _normalize_by_train(X_train, X_val, X_test): # normalizes training, validation and test data
@@ -755,7 +781,7 @@ def train_raw_eeg_cnn(payloads: dict, config: dict | None = None): # trains and 
     X_train, X_val, X_test = _normalize_by_train(X_train, X_val, X_test)
 
     # chooses where the model will run
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = _torch_device()
 
     # reproducibility
     torch.manual_seed(RANDOM_STATE)

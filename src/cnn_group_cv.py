@@ -42,6 +42,8 @@ from src.ml_models import (
     _subjects_with_multiple_labels,
     _check_subject_leakage,
     _split_info,
+    _torch_device,
+    _balanced_sampler,
 )
 
 if SKLEARN_OK:
@@ -121,7 +123,7 @@ def valid_inner_train_val_split(X, y, groups, n_splits=4, random_state=RANDOM_ST
 
 
 def train_spectrogram_cnn_fold(X_train, y_train, X_val, y_val, seed): # trains a spectrogram cnn for one fold of the group cv
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu") # sets device to gpu if available
+    device = _torch_device() # sets device to gpu/mps if available
 
     torch.manual_seed(seed) # sets random seeds for reproducibility
     np.random.seed(seed)
