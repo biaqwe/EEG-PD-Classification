@@ -25,7 +25,7 @@ from src.config import (
     SPECTROGRAM_OVERLAP_RATIO,
     SPECTROGRAM_CHANNEL_MODE,
 )
-from src.data_utils import dataset_summary, parse_csv, parse_iowa_mat
+from src.data_utils import dataset_summary, get_xy, parse_csv, parse_iowa_mat
 from src.raw_eeg import (
     build_brainvision_payload,
     load_brainvision_feature_table,
@@ -875,6 +875,33 @@ def render_results():
             with mcols_std[2]:
                 st.metric("Subject AUC STD", "-" if auc_std is None else f"{auc_std:.3f}")
 
+            st.markdown("**Window-level mean performance (Group CV)**")
+            window_cols = st.columns(6)
+            window_metric_specs = [
+                ("Accuracy", "window_acc_mean"),
+                ("F1", "window_f1_mean"),
+                ("AUC", "window_auc_mean"),
+                ("Balanced Acc", "window_balanced_accuracy_mean"),
+                ("Sensitivity", "window_sensitivity_mean"),
+                ("Specificity", "window_specificity_mean"),
+            ]
+            for col, (label, key) in zip(window_cols, window_metric_specs):
+                with col:
+                    v = metrics.get(key, None)
+                    st.metric(label, "-" if v is None else f"{v:.3f}")
+
+            st.markdown("**Subject-level extra mean performance (Group CV)**")
+            subject_extra_cols = st.columns(3)
+            subject_extra_specs = [
+                ("Balanced Acc", "subject_balanced_accuracy_mean"),
+                ("Sensitivity", "subject_sensitivity_mean"),
+                ("Specificity", "subject_specificity_mean"),
+            ]
+            for col, (label, key) in zip(subject_extra_cols, subject_extra_specs):
+                with col:
+                    v = metrics.get(key, None)
+                    st.metric(label, "-" if v is None else f"{v:.3f}")
+
             fold_details = metrics.get("fold_details", [])
             if fold_details:
                 with st.expander("Fold details", expanded=False):
@@ -979,8 +1006,9 @@ def render_results():
 
             st.dataframe(pd.DataFrame(split_rows), use_container_width=True, hide_index=True)
 
-        if st.session_state.last_action == "cnn_group_cv":
-            st.markdown("**CNN Group CV diagnostic checks**")
+        if st.session_state.last_action in ["svm_group_cv", "cnn_group_cv"]:
+            group_cv_name = "CNN Group CV" if st.session_state.last_action == "cnn_group_cv" else "SVM Group CV"
+            st.markdown(f"**{group_cv_name} diagnostic checks**")
             diag_cols = st.columns(4)
 
             with diag_cols[0]:
@@ -1005,10 +1033,11 @@ def render_results():
                     "Check label detection in the raw EEG manifest and inspect filenames."
                 )
 
-            st.success(
-                "CNN Group CV uses subject-level outer folds and an inner subject-level validation split. "
-                "No subject leakage was detected."
-            )
+            leakage_detected = metrics.get("subject_leakage_detected", None)
+            if leakage_detected is False:
+                st.success(f"{group_cv_name} uses subject-level outer folds. No subject leakage was detected.")
+            elif leakage_detected is True:
+                st.error("Subject leakage detected.")
 
         if "error" in metrics:
             st.error(metrics["error"])
@@ -1029,6 +1058,18 @@ def render_results():
                 st.metric("Spectrogram", f"{metrics.get('visual_height', '-')} x {metrics.get('visual_width', '-')}")
             with extra_cols[5]:
                 threshold = metrics.get("threshold", metrics.get("threshold_mean", None))
+                st.metric("Threshold", "-" if threshold is None else f"{threshold:.3f}")
+        elif st.session_state.last_action == "svm_group_cv":
+            st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
+            extra_cols = st.columns(4)
+            with extra_cols[0]:
+                st.metric("Subjects", str(metrics.get("n_subjects", metrics.get("subjects", "-"))))
+            with extra_cols[1]:
+                st.metric("Features", str(metrics.get("features", "-")))
+            with extra_cols[2]:
+                st.metric("Splits", str(metrics.get("n_splits", "-")))
+            with extra_cols[3]:
+                threshold = metrics.get("threshold_mean", None)
                 st.metric("Threshold", "-" if threshold is None else f"{threshold:.3f}")
 
     st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
@@ -1172,21 +1213,18 @@ def render_results():
                         key="sample_prediction_index_svm",
                     )
 
-                    sample = df.iloc[[sample_idx]].copy()
-                    y_true = sample[ycol].iloc[0]
-                    # removes cols that shouldnt be used as model feats
-                    meta_cols = [
-                        c for c in [
-                            "group", "subject_id", "subject_key", "window_start",
-                            "recording", "part", "start", "source_file",
-                        ] if c in sample.columns
-                    ]
+                    X_all, y_all, xy_err = get_xy(df)
+                    if xy_err:
+                        st.warning(xy_err)
+                        return
 
-                    X_sample = sample.drop(columns=[ycol] + meta_cols, errors="ignore")
+                    sample = df.iloc[[sample_idx]].copy()
+                    y_true = y_all.iloc[sample_idx]
+                    X_sample = X_all.iloc[[sample_idx]]
 
                     # run svm prediction
-                    pred = model.predict(X_sample)[0]
-                    proba = model.predict_proba(X_sample)[0]
+                    pred = model.predict(X_sample.values)[0]
+                    proba = model.predict_proba(X_sample.values)[0]
 
                     pred_label = "PD" if int(pred) == 1 else "HC"
                     true_label = "PD" if int(y_true) == 1 else "HC"
@@ -1418,25 +1456,110 @@ def render_raw_viewer():
         ordered_indices = [channel_to_idx[name] for name in selected_channels] # converts the selected channel names into indices
         selected_data = data[ordered_indices] # extracts only the selected channel sigs from the eeg data
 
-        # finds the largest absolute sig value from the selected channels
-        scale = np.max(np.abs(selected_data))
-        if scale == 0:
-            scale = 1.0
+        view_mode_options = ["Signal", "Spectrogram"]
+        if hasattr(st, "segmented_control"):
+            selected_view_mode = st.segmented_control(
+                "Representation",
+                options=view_mode_options,
+                default="Signal",
+                key="raw_viewer_representation",
+            )
+        else:
+            selected_view_mode = st.radio(
+                "Representation",
+                options=view_mode_options,
+                horizontal=True,
+                key="raw_viewer_representation",
+            )
 
-        fig = plt.figure(figsize=(12, 7))
-        spacing = 3.0
+        if selected_view_mode == "Signal":
+            # finds the largest absolute sig value from the selected channels
+            scale = np.max(np.abs(selected_data))
+            if scale == 0:
+                scale = 1.0
 
-        for plot_idx, channel_name in enumerate(selected_channels):
-            signal = selected_data[plot_idx] / scale # divides by scale
-            offset = (len(selected_channels) - 1 - plot_idx) * spacing # vertical offset
-            plt.plot(times, signal + offset, linewidth=0.9) # upward or downward shift
-            plt.text(times[0] if len(times) else 0, offset, channel_name, va="bottom", ha="left")
+            fig = plt.figure(figsize=(12, 7))
+            spacing = 3.0
 
-        plt.title(f"Preprocessed EEG signals - {selected_recording}")
-        plt.xlabel("Time (s)")
-        plt.yticks([])
-        plt.grid(True, alpha=0.25)
-        st.pyplot(fig, clear_figure=True)
+            for plot_idx, channel_name in enumerate(selected_channels):
+                signal = selected_data[plot_idx] / scale # divides by scale
+                offset = (len(selected_channels) - 1 - plot_idx) * spacing # vertical offset
+                plt.plot(times, signal + offset, linewidth=0.9) # upward or downward shift
+                plt.text(times[0] if len(times) else 0, offset, channel_name, va="bottom", ha="left")
+
+            plt.title(f"Preprocessed EEG signals - {selected_recording}")
+            plt.xlabel("Time (s)")
+            plt.yticks([])
+            plt.grid(True, alpha=0.25)
+            st.pyplot(fig, clear_figure=True)
+        else:
+            try:
+                from scipy.signal import spectrogram
+
+                cfg = st.session_state.preprocessing_summary or {}
+                sfreq = float(summary["sampling_rate"])
+                n_samples = int(selected_data.shape[1])
+                nperseg = min(int(cfg.get("spectrogram_nperseg", SPECTROGRAM_NPERSEG)), n_samples)
+                nperseg = max(8, nperseg)
+                noverlap = int(nperseg * float(cfg.get("spectrogram_overlap_ratio", SPECTROGRAM_OVERLAP_RATIO)))
+                noverlap = min(max(0, noverlap), nperseg - 1)
+
+                freqs, spec_times, pxx = spectrogram(
+                    selected_data,
+                    fs=sfreq,
+                    nperseg=nperseg,
+                    noverlap=noverlap,
+                    axis=1,
+                    scaling="density",
+                    mode="psd",
+                )
+
+                if bool(cfg.get("use_bandpass", RAW_USE_BANDPASS)):
+                    low = float(cfg.get("bandpass_low", RAW_L_FREQ))
+                    high = float(cfg.get("bandpass_high", RAW_H_FREQ))
+                    freq_mask = (freqs >= low) & (freqs <= high)
+                    if freq_mask.any():
+                        freqs = freqs[freq_mask]
+                        pxx = pxx[:, freq_mask, :]
+
+                spec_db = 10.0 * np.log10(pxx.astype(np.float32) + 1e-12)
+                vmin = float(np.percentile(spec_db, 5))
+                vmax = float(np.percentile(spec_db, 95))
+                if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin >= vmax:
+                    vmin = float(np.nanmin(spec_db))
+                    vmax = float(np.nanmax(spec_db))
+
+                spec_fig, axes = plt.subplots(
+                    len(selected_channels),
+                    1,
+                    figsize=(12, max(3.2, 2.25 * len(selected_channels))),
+                    sharex=True,
+                    squeeze=False,
+                )
+
+                last_mesh = None
+                for plot_idx, channel_name in enumerate(selected_channels):
+                    ax = axes[plot_idx, 0]
+                    last_mesh = ax.pcolormesh(
+                        spec_times,
+                        freqs,
+                        spec_db[plot_idx],
+                        shading="auto",
+                        vmin=vmin,
+                        vmax=vmax,
+                    )
+                    ax.set_ylabel(f"{channel_name}\nHz")
+                    ax.grid(False)
+
+                axes[-1, 0].set_xlabel("Time (s)")
+                spec_fig.suptitle(f"Channel spectrograms - {selected_recording}")
+                spec_fig.tight_layout()
+                if last_mesh is not None:
+                    spec_fig.colorbar(last_mesh, ax=axes[:, 0], label="Power (dB)", shrink=0.92)
+                st.pyplot(spec_fig, clear_figure=True)
+
+            except Exception as e:
+                st.warning(f"Could not generate spectrograms: {e}")
 
         raw_table = {"time_sec": times}
         for channel_name in selected_channels:

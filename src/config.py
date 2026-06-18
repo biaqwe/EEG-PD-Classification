@@ -18,6 +18,12 @@ META_COLUMNS = [
     "part", # segment index
     "start", # start sample
     "source_file", # original file
+    "label_source",
+    "complete_recording",
+    "file_format",
+    "file_type",
+    "filename",
+    "participant_id",
 ]
 
 RANDOM_STATE = 42 # sets a fixed random seed for reproducible results

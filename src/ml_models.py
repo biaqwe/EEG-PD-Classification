@@ -132,7 +132,8 @@ def train_svm(df: pd.DataFrame): # trains and evaluates svm model
     X_train, X_test = X.values[train_idx], X.values[test_idx]
     y_train, y_test = y.values[train_idx], y.values[test_idx]
 
-    clf = build_svm_pipeline() # creates the ml pipeline
+    k_best = min(K_BEST, X_train.shape[1])
+    clf = build_svm_pipeline(k_best=k_best) # creates the ml pipeline
     clf.fit(X_train, y_train) # trains the model using the training data
 
     proba = clf.predict_proba(X_test)[:, 1] # predicts the probability of pd for each test sample
@@ -241,60 +242,49 @@ def train_svm_group_cv(df: pd.DataFrame, n_splits: int = N_SPLITS, random_state:
     if "subject_key" not in df.columns:
         return None, None, None, None, "Dataset must contain a subject_key column for group cross-validation."
 
-    # chooses the first detected col label and separates the data into feats and metadata and target labels
+    # chooses the first detected label column and uses the shared SVM feature cleanup path
     ycol = label_candidates[0]
-    X_df = df.drop(columns=[ycol]).copy()
-    y = df[ycol].copy()
-
-    # converst text lables to nrs
-    if y.dtype == object:
-        y = y.astype(str).str.strip().str.lower()
-        y = y.map({"pd": 1, "hc": 0, "1": 1, "0": 0}).fillna(y)
-
-    # makes sure all labels are ints
-    try:
-        y = y.astype(int)
-    except Exception:
-        uniq = sorted(pd.unique(y))
-        mapping = {v: i for i, v in enumerate(uniq)}
-        y = y.map(mapping).astype(int)
-
-    # identifies metadata cols that shouldnt be used for training
-    meta_cols = [
-        c for c in [
-            "group", "subject_id", "subject_key", "window_start",
-            "recording", "part", "start", "source_file"
-        ] if c in X_df.columns
-    ]
+    X_df, y, err = get_xy(df)
+    if err:
+        return None, None, None, None, err
 
     # creates the group labels for cv
-    groups = df["subject_key"].astype(str).values
-    # removes metadata cols from feats
-    X_df = X_df.drop(columns=meta_cols, errors="ignore")
-
-    # cleans invalid numeric values
-    X_df = X_df.replace([np.inf, -np.inf], np.nan).dropna(axis=0)
-    y = y.loc[X_df.index]
-    groups = pd.Series(groups, index=df.index).loc[X_df.index].values
+    groups = df.loc[X_df.index, "subject_key"].astype(str).values
 
     # checks if enough usable data
     if len(X_df) < 10 or len(np.unique(y)) < 2:
         return None, None, None, None, "Not enough data or only one class present."
+
+    subject_df = pd.DataFrame({
+        "subject_key": groups,
+        "label": y.values,
+    }).groupby("subject_key", as_index=False).agg(
+        label=("label", "first")
+    )
+    min_subjects_per_class = int(subject_df["label"].value_counts().min())
+    effective_splits = min(int(n_splits), min_subjects_per_class)
+
+    if effective_splits < 2:
+        return None, None, None, None, "Need at least 2 HC subjects and 2 PD subjects for SVM group cross-validation."
 
     # converts feats and lables to numpy arrays
     X = X_df.astype(np.float32).values
     y = y.values
 
     # creates the cv splitter
-    sgkf = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+    sgkf = StratifiedGroupKFold(n_splits=effective_splits, shuffle=True, random_state=random_state)
 
     # lists for fold results
     win_acc, win_f1, win_auc = [], [], [] # window level metrics
+    win_balanced_acc, win_sensitivity, win_specificity = [], [], [] # extra window level metrics
     subj_acc, subj_f1, subj_auc = [], [], [] # subject level metrics
+    subj_balanced_acc, subj_sensitivity, subj_specificity = [], [], [] # extra subject level metrics
     win_cms, subj_cms = [], [] # confusion matrices
     thresholds = [] # thresholds
     fold_rows = [] # fold summary info
     sample_prediction_rows = [] # individual sample predictions
+    all_window_y, all_window_proba = [], [] # all window probabilities across folds
+    all_subject_y, all_subject_proba = [], [] # all subject probabilities across folds
 
     # runs cv fold by fold
     for fold_idx, (train_idx, test_idx) in enumerate(sgkf.split(X, y, groups=groups), start=1):
@@ -323,10 +313,16 @@ def train_svm_group_cv(df: pd.DataFrame, n_splits: int = N_SPLITS, random_state:
 
         # computes window level metrics
         acc_w, f1_w, auc_w, cm_w = metrics_from_proba(y_test, proba_test, thr)
+        extra_w = _binary_extra_metrics(y_test, pred_test)
         win_acc.append(acc_w) # window accuracy
         win_f1.append(f1_w) # window f1 score
         win_auc.append(auc_w) # window auc
+        win_balanced_acc.append(extra_w["balanced_accuracy"])
+        win_sensitivity.append(extra_w["sensitivity"])
+        win_specificity.append(extra_w["specificity"])
         win_cms.append(cm_w) # window confusion matrix
+        all_window_y.extend(y_test.astype(int).tolist())
+        all_window_proba.extend(proba_test.astype(float).tolist())
 
         # creates a dataframe for the current test fold
         fold_test = df.loc[X_df.index].iloc[test_idx][["subject_key", ycol]].copy()
@@ -345,13 +341,20 @@ def train_svm_group_cv(df: pd.DataFrame, n_splits: int = N_SPLITS, random_state:
         df_subj = subject_aggregate(fold_test)
         y_subj = df_subj["label"].astype(int).values
         proba_subj = df_subj["proba_pd"].astype(float).values
+        pred_subj = (proba_subj >= thr).astype(int)
 
         # computes subject level metrics
         acc_s, f1_s, auc_s, cm_s = metrics_from_proba(y_subj, proba_subj, thr)
+        extra_s = _binary_extra_metrics(y_subj, pred_subj)
         subj_acc.append(acc_s) # subject accuracy
         subj_f1.append(f1_s) # subject f1 score
         subj_auc.append(auc_s) # subject auc
+        subj_balanced_acc.append(extra_s["balanced_accuracy"])
+        subj_sensitivity.append(extra_s["sensitivity"])
+        subj_specificity.append(extra_s["specificity"])
         subj_cms.append(cm_s) # subject confusion matrix
+        all_subject_y.extend(y_subj.astype(int).tolist())
+        all_subject_proba.extend(proba_subj.astype(float).tolist())
 
         # gets original rows of test fold
         test_original_rows = df.loc[X_df.index].iloc[test_idx].copy()
@@ -381,9 +384,15 @@ def train_svm_group_cv(df: pd.DataFrame, n_splits: int = N_SPLITS, random_state:
             "window_acc": acc_w,
             "window_f1": f1_w,
             "window_auc": auc_w,
+            "window_balanced_accuracy": extra_w["balanced_accuracy"],
+            "window_sensitivity": extra_w["sensitivity"],
+            "window_specificity": extra_w["specificity"],
             "subject_acc": acc_s,
             "subject_f1": f1_s,
             "subject_auc": auc_s,
+            "subject_balanced_accuracy": extra_s["balanced_accuracy"],
+            "subject_sensitivity": extra_s["sensitivity"],
+            "subject_specificity": extra_s["specificity"],
         })
 
     # helper for mean and std
@@ -395,11 +404,17 @@ def train_svm_group_cv(df: pd.DataFrame, n_splits: int = N_SPLITS, random_state:
     w_acc_m, w_acc_s = mean_std(win_acc)
     w_f1_m, w_f1_s = mean_std(win_f1)
     w_auc_m, w_auc_s = mean_std(win_auc)
+    w_bal_m, w_bal_s = mean_std(win_balanced_acc)
+    w_sens_m, w_sens_s = mean_std(win_sensitivity)
+    w_spec_m, w_spec_s = mean_std(win_specificity)
 
     # mean and std for subject level metrics
     s_acc_m, s_acc_s = mean_std(subj_acc)
     s_f1_m, s_f1_s = mean_std(subj_f1)
     s_auc_m, s_auc_s = mean_std(subj_auc)
+    s_bal_m, s_bal_s = mean_std(subj_balanced_acc)
+    s_sens_m, s_sens_s = mean_std(subj_sensitivity)
+    s_spec_m, s_spec_s = mean_std(subj_specificity)
 
     # mean and std for thresholds
     thr_m, thr_s = mean_std(thresholds)
@@ -423,19 +438,39 @@ def train_svm_group_cv(df: pd.DataFrame, n_splits: int = N_SPLITS, random_state:
         "window_f1_std": w_f1_s,
         "window_auc_mean": w_auc_m,
         "window_auc_std": w_auc_s,
+        "window_balanced_accuracy_mean": w_bal_m,
+        "window_balanced_accuracy_std": w_bal_s,
+        "window_sensitivity_mean": w_sens_m,
+        "window_sensitivity_std": w_sens_s,
+        "window_specificity_mean": w_spec_m,
+        "window_specificity_std": w_spec_s,
         "subject_acc_mean": s_acc_m,
         "subject_acc_std": s_acc_s,
         "subject_f1_mean": s_f1_m,
         "subject_f1_std": s_f1_s,
         "subject_auc_mean": s_auc_m,
         "subject_auc_std": s_auc_s,
+        "subject_balanced_accuracy_mean": s_bal_m,
+        "subject_balanced_accuracy_std": s_bal_s,
+        "subject_sensitivity_mean": s_sens_m,
+        "subject_sensitivity_std": s_sens_s,
+        "subject_specificity_mean": s_spec_m,
+        "subject_specificity_std": s_spec_s,
         "threshold_mean": thr_m,
         "threshold_std": thr_s,
-        "n_splits": n_splits,
+        "n_splits": effective_splits,
+        "requested_n_splits": n_splits,
         "subjects": int(pd.Series(groups).nunique()),
+        "n_subjects": int(pd.Series(groups).nunique()),
         "features": int(X.shape[1]),
+        "model": "SVM",
+        "validation_strategy": "5-fold subject-level cross-validation",
+        "subject_leakage_detected": False,
         "fold_details": fold_rows,
     }
+
+    metrics.update(_probability_diagnostics(all_window_y, all_window_proba, "window_cv"))
+    metrics.update(_probability_diagnostics(all_subject_y, all_subject_proba, "subject_cv"))
 
     return metrics, win_cm_sum, subj_cm_sum, sample_predictions_df, None
 

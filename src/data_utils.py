@@ -101,33 +101,47 @@ def dataset_summary(df: Optional[pd.DataFrame]) -> Tuple[Optional[int], Optional
         return None, None
 
     cols = list(df.columns)
-    label_cols = [c for c in cols if c.lower() in LABEL_COLUMNS] # detects the label col
-    feature_cols = [c for c in cols if c not in label_cols and c not in META_COLUMNS] # detects feat cols
+    label_cols = [c for c in cols if c.lower() in LABEL_COLUMNS]
+    candidate_cols = [c for c in cols if c not in label_cols and c not in META_COLUMNS]
+
+    numeric_df = df[candidate_cols].apply(pd.to_numeric, errors="coerce")
+    feature_cols = [c for c in numeric_df.columns if not numeric_df[c].isna().all()]
+
     return len(df), len(feature_cols)
 
 
-def get_xy(df: pd.DataFrame): # separates the dataset into feats and lables
+def get_xy(df: pd.DataFrame):
     cols = list(df.columns)
-    # finds cols containing class labels
     label_candidates = [c for c in cols if c.lower() in LABEL_COLUMNS]
 
     if not label_candidates:
         return None, None, "Dataset CSV must contain a label column: label/class/y/target."
 
-    ycol = label_candidates[0] # extracts the first detected label col
-    X = df.drop(columns=[ycol]).copy() # removes label col from dataset
-    X = X.drop(columns=[c for c in META_COLUMNS if c in X.columns], errors="ignore") # removes cols that contain metadata instead of feats
-    y = df[ycol].copy() # stores the label col separately
+    ycol = label_candidates[0]
+
+    X = df.drop(columns=[ycol]).copy()
+    X = X.drop(columns=[c for c in META_COLUMNS if c in X.columns], errors="ignore")
+
+    X = X.apply(pd.to_numeric, errors="coerce")
+    X = X.dropna(axis=1, how="all")
+    X = X.replace([float("inf"), float("-inf")], pd.NA)
+
+    if X.shape[1] == 0:
+        return None, None, "No numeric feature columns were found. Make sure you generated SVM features, not only the raw EEG manifest."
+
+    X = X.fillna(X.median(numeric_only=True)).fillna(0.0)
+
+    y = df[ycol].copy()
 
     if y.dtype == object:
         y = y.astype(str).str.strip().str.lower()
-        y = y.map({"pd": 1, "hc": 0, "1": 1, "0": 0}).fillna(y) # maps class names to nrs
+        y = y.map({"pd": 1, "hc": 0, "1": 1, "0": 0}).fillna(y)
 
     try:
-        y = y.astype(int) # converts labels to ints
+        y = y.astype(int)
     except Exception:
         uniq = sorted(pd.unique(y))
-        mapping = {v: i for i, v in enumerate(uniq)} # handle unusual labels
+        mapping = {v: i for i, v in enumerate(uniq)}
         y = y.map(mapping).astype(int)
 
     return X, y, None
