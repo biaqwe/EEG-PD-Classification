@@ -16,7 +16,7 @@ from src.config import (
     RAW_USE_BANDPASS,
     RAW_USE_NOTCH,
 )
-from scripts.make_features_iowa import build_iowa_features_from_mat
+from scripts.make_features_mat import build_mat_features_from_file
 
 
 def parse_csv(uploaded) -> Optional[pd.DataFrame]: # reads csv file
@@ -30,7 +30,7 @@ def parse_csv(uploaded) -> Optional[pd.DataFrame]: # reads csv file
             return None
 
 
-def parse_iowa_mat(uploaded, preprocessing_summary=None): # converts .mat into .csv
+def parse_mat_dataset(uploaded, preprocessing_summary=None): # converts .mat into .csv
     # uses preprocessing settings from the app
     cfg = preprocessing_summary or {}
 
@@ -68,7 +68,7 @@ def parse_iowa_mat(uploaded, preprocessing_summary=None): # converts .mat into .
                 tmp.write(uploaded.read())
             tmp_path = tmp.name
         # extracts feats from file
-        df, summary = build_iowa_features_from_mat(
+        df, summary = build_mat_features_from_file(
             mat_path=tmp_path,
             fs=fs,
             window=window,

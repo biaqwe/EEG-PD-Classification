@@ -13,7 +13,7 @@ from sklearn.metrics import (
     roc_curve,
 )
 
-CSV_PATH = "dataset_iowa_pd_hc.csv"
+CSV_PATH = "dataset_pd_hc.csv"
 N_SPLITS = 5
 RANDOM_STATE = 42
 

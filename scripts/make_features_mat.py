@@ -224,7 +224,7 @@ def get_subject_matrix( # collects all eeg signals for one subject from all vali
     return X
 
 
-def build_iowa_features_from_mat( # reads the .mat file, extracts feats and sigs from all subjects and returns them as a dataset that can be used for ml
+def build_mat_features_from_file( # reads the .mat file, extracts feats and sigs from all subjects and returns them as a dataset that can be used for ml
     mat_path,
     fs=DEFAULT_FS,
     window=DEFAULT_WINDOW,
@@ -267,7 +267,7 @@ def build_iowa_features_from_mat( # reads the .mat file, extracts feats and sigs
         # debug
         if verbose:
             print("=========================================================")
-            print("Iowa feature extraction started")
+            print("MAT feature extraction started")
             print("=========================================================")
             print(f"Input file: {mat_path}")
             print(f"Sampling rate: {fs} Hz")
@@ -405,7 +405,7 @@ def build_iowa_features_from_mat( # reads the .mat file, extracts feats and sigs
     return df, summary
 
 
-def save_iowa_features_csv(df, output_csv): # writes the data frame to a .csv file
+def save_mat_features_csv(df, output_csv): # writes the data frame to a .csv file
     output_csv = Path(output_csv)
     output_csv.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(output_csv, index=False)
@@ -415,8 +415,8 @@ def save_iowa_features_csv(df, output_csv): # writes the data frame to a .csv fi
 def main(): # processes the input file, creates the dataset and prints info about it
     # for cli
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input", type=str, required=False, default=None, help="Path to IowaData.mat")
-    parser.add_argument("--output", type=str, required=False, default="dataset_iowa_pd_hc.csv")
+    parser.add_argument("--input", type=str, required=False, default=None, help="Path to the EEG .mat dataset")
+    parser.add_argument("--output", type=str, required=False, default="dataset_pd_hc.csv")
     parser.add_argument("--fs", type=float, default=DEFAULT_FS)
     parser.add_argument("--window", type=int, default=DEFAULT_WINDOW)
     parser.add_argument("--step", type=int, default=DEFAULT_STEP)
@@ -431,10 +431,10 @@ def main(): # processes the input file, creates the dataset and prints info abou
     args = parser.parse_args()
 
     if args.input is None:
-        raise ValueError("Please provide --input path_to_IowaData.mat")
+        raise ValueError("Please provide --input path_to_dataset.mat")
 
     # calls main processing func
-    df, summary = build_iowa_features_from_mat(
+    df, summary = build_mat_features_from_file(
         mat_path=args.input,
         fs=args.fs,
         window=args.window,
@@ -449,7 +449,7 @@ def main(): # processes the input file, creates the dataset and prints info abou
         verbose=True,
     )
 
-    out_path = save_iowa_features_csv(df, args.output)
+    out_path = save_mat_features_csv(df, args.output)
 
     print("=========================================================")
     print(f"Saved: {out_path}")

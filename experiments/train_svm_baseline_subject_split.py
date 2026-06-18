@@ -7,7 +7,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
 from sklearn.metrics import accuracy_score, f1_score, confusion_matrix, roc_auc_score
 
-CSV_PATH = "dataset_iowa_pd_hc.csv"
+CSV_PATH = "dataset_pd_hc.csv"
 TEST_SIZE = 0.30
 RANDOM_STATE = 42
 

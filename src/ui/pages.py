@@ -5,9 +5,7 @@ import pandas as pd
 import streamlit as st
 
 from src.actions import (
-    run_train_cnn,
     run_train_cnn_group_cv,
-    run_train_svm,
     run_train_svm_group_cv,
 )
 from src.config import (
@@ -25,7 +23,7 @@ from src.config import (
     SPECTROGRAM_OVERLAP_RATIO,
     SPECTROGRAM_CHANNEL_MODE,
 )
-from src.data_utils import dataset_summary, get_xy, parse_csv, parse_iowa_mat
+from src.data_utils import dataset_summary, get_xy, parse_csv, parse_mat_dataset
 from src.raw_eeg import (
     build_brainvision_payload,
     load_brainvision_feature_table,
@@ -143,15 +141,6 @@ def render_dashboard():
 
         st.markdown("<div style='height:5px;'></div>", unsafe_allow_html=True)
 
-        c1, c2 = st.columns(2)
-        # quick action buttons
-        with c1:
-            if st.button("Train CNN", use_container_width=True, disabled=not raw_ok):
-                run_train_cnn()
-        with c2:
-            if st.button("Train SVM", use_container_width=True, disabled=not tabular_ok):
-                run_train_svm()
-
         if st.button("Run SVM Group CV", use_container_width=True, disabled=not tabular_ok):
             run_train_svm_group_cv()
 
@@ -194,7 +183,7 @@ def render_import():
         <div class="card">
           <div class="card-title">
             <div style="font-weight:800; font-size:1.1rem;">Import datasets</div>
-            <div class="subtle">Use one import flow for raw EEG CNN and a separate one for CSV or Iowa .mat based SVM models</div>
+              <div class="subtle">Use one import flow for raw EEG CNN and a separate one for CSV or MAT-based SVM models</div>
           </div>
         </div>
         """,
@@ -368,7 +357,7 @@ def render_import():
             <div class="card">
               <div class="card-title">
                 <div style="font-weight:800; font-size:1.0rem;">SVM dataset import</div>
-                <div class="subtle">Upload either a ready CSV or an Iowa .mat file</div>
+                <div class="subtle">Upload either a ready CSV or a supported EEG .mat file</div>
               </div>
               <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">
                 <span class="pill">Status: <b style="color:var(--txt)">{'Loaded' if svm_loaded else 'Not loaded'}</b></span>
@@ -393,7 +382,7 @@ def render_import():
 
         # for .mat upload
         uploaded_mat = st.file_uploader(
-            "Upload Iowa .mat dataset",
+            "Upload EEG .mat dataset",
             type=["mat"],
             accept_multiple_files=False,
             key="mat_uploader",
@@ -447,7 +436,7 @@ def render_import():
                     st.session_state.mat_file_payload = uploaded_mat.getvalue()
                     st.session_state.mat_file_name = uploaded_mat.name
 
-                    df, summary, err = parse_iowa_mat(
+                    df, summary, err = parse_mat_dataset(
                         uploaded_mat,
                         preprocessing_summary=st.session_state.preprocessing_summary,
                     )
@@ -498,25 +487,6 @@ def render_import():
                 "If you upload a .mat file, the saved preprocessing config is used to generate the tabular dataset."
             )
 
-    st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
-
-    st.markdown(
-        """
-        <div class="card">
-          <div class="card-title">
-            <div style="font-weight:800; font-size:1.0rem;">How to use this page</div>
-            <div class="subtle">Choose the right import depending on the model</div>
-          </div>
-          <div class="small" style="margin-top:8px;">
-            - Use <b>Raw EEG import</b> for <b>Train CNN</b> and <b>Run CNN Group CV</b><br/>
-            - Use <b>CSV import</b> if you already have a ready tabular dataset for <b>SVM</b><br/>
-            - Use <b>Iowa .mat import</b> if you want the app to generate the SVM dataset using the saved preprocessing config
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
 
 def render_preprocess():
     st.markdown(
@@ -524,7 +494,7 @@ def render_preprocess():
         <div class="card">
           <div class="card-title">
             <div style="font-weight:800; font-size:1.05rem;">Preprocessing config</div>
-            <div class="subtle">Windowing + filtering settings used by Raw EEG CNN and Iowa .mat → SVM conversion</div>
+            <div class="subtle">Windowing + filtering settings used by Raw EEG CNN and MAT → SVM conversion</div>
           </div>
         </div>
         """,
@@ -559,14 +529,16 @@ def render_preprocess():
                 "Window length (sec)",
                 min_value=0.5,
                 value=float(default_cfg["window_sec"]),
-                step=0.5
+                step=0.5,
+                help="How many seconds of EEG are grouped into one analysis window. Longer windows include more signal context; shorter windows create more samples.",
             )
         with c2:
             step_sec = st.number_input(
                 "Step (sec)",
                 min_value=0.5,
                 value=float(default_cfg["step_sec"]),
-                step=0.5
+                step=0.5,
+                help="How far the window moves before creating the next sample. If this is smaller than the window length, windows overlap.",
             )
 
         c3, c4 = st.columns(2)
@@ -575,18 +547,28 @@ def render_preprocess():
                 "Max windows / recording",
                 min_value=1,
                 value=int(default_cfg["max_windows_per_recording"]),
-                step=1
+                step=1,
+                help="Maximum number of windows kept from each recording. This limits runtime and keeps long recordings from dominating the dataset.",
             )
         with c4:
             notch_freq = st.number_input(
                 "Notch (Hz)",
                 min_value=0.0,
                 value=float(default_cfg["notch_freq"]),
-                step=0.5
+                step=0.5,
+                help="Frequency removed by the notch filter, usually power-line noise such as 50 Hz in Europe or 60 Hz in the US.",
             )
 
-        use_notch = st.checkbox("Use notch filter", value=bool(default_cfg["use_notch"]))
-        use_bandpass = st.checkbox("Use band-pass filter", value=bool(default_cfg["use_bandpass"]))
+        use_notch = st.checkbox(
+            "Use notch filter",
+            value=bool(default_cfg["use_notch"]),
+            help="Removes a very narrow frequency band, commonly used to reduce electrical mains noise.",
+        )
+        use_bandpass = st.checkbox(
+            "Use band-pass filter",
+            value=bool(default_cfg["use_bandpass"]),
+            help="Keeps only frequencies between the low and high cutoffs, removing very slow drift and very high-frequency noise.",
+        )
 
         if use_bandpass:
             c5, c6 = st.columns(2)
@@ -595,14 +577,16 @@ def render_preprocess():
                     "Band-pass low (Hz)",
                     min_value=0.0,
                     value=float(default_cfg["bandpass_low"]),
-                    step=0.1
+                    step=0.1,
+                    help="Lower frequency cutoff for the band-pass filter. Frequencies below this value are reduced.",
                 )
             with c6:
                 bandpass_high = st.number_input(
                     "Band-pass high (Hz)",
                     min_value=0.1,
                     value=float(default_cfg["bandpass_high"]),
-                    step=0.5
+                    step=0.5,
+                    help="Upper frequency cutoff for the band-pass filter. Frequencies above this value are reduced.",
                 )
         else:
             bandpass_low = float(default_cfg["bandpass_low"])
@@ -615,7 +599,8 @@ def render_preprocess():
                 min_value=32,
                 max_value=256,
                 value=int(default_cfg.get("visual_height", SPECTROGRAM_HEIGHT)),
-                step=16
+                step=16,
+                help="Output image height for each spectrogram used by the CNN. Larger images preserve more detail but use more memory.",
             )
         with c8:
             visual_width = st.number_input(
@@ -623,7 +608,8 @@ def render_preprocess():
                 min_value=32,
                 max_value=256,
                 value=int(default_cfg.get("visual_width", SPECTROGRAM_WIDTH)),
-                step=16
+                step=16,
+                help="Output image width for each spectrogram used by the CNN. Larger images preserve more time detail but train more slowly.",
             )
 
         channel_options = ["mean", "regions", "all"]
@@ -637,7 +623,7 @@ def render_preprocess():
                 "Spectrogram channel mode",
                 options=channel_options,
                 index=channel_options.index(current_channel_mode),
-                help="regions is recommended; all uses much more RAM; mean is fastest but loses electrode information."
+                help="How EEG channels are combined into CNN image channels. regions groups electrodes by scalp area; all keeps each channel; mean averages all channels.",
             )
         with c10:
             spectrogram_nperseg = st.number_input(
@@ -645,7 +631,8 @@ def render_preprocess():
                 min_value=32,
                 max_value=512,
                 value=int(default_cfg.get("spectrogram_nperseg", SPECTROGRAM_NPERSEG)),
-                step=32
+                step=32,
+                help="Number of signal samples used for each short-time frequency calculation. Higher values improve frequency resolution but reduce time resolution.",
             )
 
         spectrogram_overlap_ratio = st.slider(
@@ -653,7 +640,8 @@ def render_preprocess():
             min_value=0.0,
             max_value=0.9,
             value=float(default_cfg.get("spectrogram_overlap_ratio", SPECTROGRAM_OVERLAP_RATIO)),
-            step=0.05
+            step=0.05,
+            help="How much neighboring spectrogram segments overlap. More overlap makes smoother spectrograms but increases computation.",
         )
 
         # saves current config settings
@@ -701,7 +689,7 @@ def render_preprocess():
                 if st.session_state.dataset_source == "mat" and st.session_state.mat_file_payload is not None:
                     mat_buffer = io.BytesIO(st.session_state.mat_file_payload)
                     mat_buffer.name = st.session_state.mat_file_name or "dataset.mat"
-                    df, summary, err = parse_iowa_mat(
+                    df, summary, err = parse_mat_dataset(
                         mat_buffer,
                         preprocessing_summary=new_summary,
                     )
@@ -742,7 +730,7 @@ def render_preprocess():
             <div class="card">
               <div class="card-title">
                 <div style="font-weight:800; font-size:1.05rem;">Current config</div>
-                <div class="subtle">Used by Train CNN, Run CNN Group CV and by MAT → SVM feature generation</div>
+                <div class="subtle">Used by Run CNN Group CV and by MAT → SVM feature generation</div>
               </div>
             </div>
             """,
@@ -756,37 +744,6 @@ def render_preprocess():
             st.info("No preprocessing config saved yet.")
         else:
             st.json(st.session_state.preprocessing_summary)
-
-        st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
-
-        st.markdown(
-            """
-            <div class="card">
-              <div class="card-title">
-                <div style="font-weight:800; font-size:1.05rem;">Notes</div>
-                <div class="subtle">What this page does</div>
-              </div>
-              <div class="small">
-                - Used by <b>Train CNN</b> and <b>Run CNN Group CV</b><br/>
-                - Also used when converting <b>Iowa .mat</b> into a tabular dataset for <b>SVM</b><br/>
-                - Applies optional notch and band-pass filtering<br/>
-                - Segments data into fixed windows<br/>
-                - Save configuration does not process data yet<br/>
-                - The actual MAT conversion happens when you load the .mat file in Import
-              </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        # shows preprocessing logs if any
-        if st.session_state.preprocessing_logs:
-            st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
-            logs_text = "\n".join(st.session_state.preprocessing_logs)
-            st.markdown(
-                f"<div class='logbox'>{logs_text.replace('<','&lt;').replace('>','&gt;')}</div>",
-                unsafe_allow_html=True
-            )
 
 
 def get_last_model_display_name(): # returns the name of the last trained model
@@ -805,6 +762,8 @@ def get_last_model_display_name(): # returns the name of the last trained model
 
 def render_results():
     model_name = get_last_model_display_name()
+    metrics = st.session_state.last_metrics or {}
+    last_action = st.session_state.last_action
 
     st.markdown(
         f"""
@@ -812,27 +771,7 @@ def render_results():
           <div class="card-title">
             <div>
               <div style="font-weight:800; font-size:1.05rem;">Evaluation and model comparison</div>
-              <div class="subtle">Metrics, confusion matrix, ROC/AUC, export</div>
-            </div>
-            <div class="pill">Model: {model_name}</div>
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.markdown("<div style='height:5px;'></div>", unsafe_allow_html=True)
-
-    # gets the metrics from last train
-    metrics = st.session_state.last_metrics or {}
-
-    st.markdown(
-        f"""
-        <div class="card">
-          <div class="card-title">
-            <div>
-              <div style="font-weight:800; font-size:1.05rem;">Metrics</div>
-              <div class="subtle">Last run</div>
+              <div class="subtle">Metrics, visualizations, diagnostics and traceability</div>
             </div>
             <div class="pill">Model: {model_name}</div>
           </div>
@@ -845,188 +784,202 @@ def render_results():
 
     if not metrics:
         st.info("No metrics yet. Train a model first.")
-    else:
-        # svm/cnn group cv metrics
-        if st.session_state.last_action in ["svm_group_cv", "cnn_group_cv"]:
-            st.markdown("**Subject-level mean performance (Group CV)**")
-            mcols = st.columns(3)
+        return
 
-            acc = metrics.get("subject_acc_mean", None)
-            f1 = metrics.get("subject_f1_mean", None)
-            auc = metrics.get("subject_auc_mean", None)
+    def fmt_value(value, digits=3):
+        if value is None:
+            return "-"
+        try:
+            if pd.isna(value):
+                return "-"
+        except TypeError:
+            pass
+        if isinstance(value, (int, float)):
+            return f"{float(value):.{digits}f}"
+        return str(value)
 
-            with mcols[0]:
-                st.metric("Subject Accuracy", "-" if acc is None else f"{acc:.3f}")
-            with mcols[1]:
-                st.metric("Subject F1", "-" if f1 is None else f"{f1:.3f}")
-            with mcols[2]:
-                st.metric("Subject AUC", "-" if auc is None else f"{auc:.3f}")
+    def label_from_int(value):
+        return "PD" if int(value) == 1 else "HC"
 
-            mcols_std = st.columns(3)
+    def metric_table(rows):
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
-            acc_std = metrics.get("subject_acc_std", None)
-            f1_std = metrics.get("subject_f1_std", None)
-            auc_std = metrics.get("subject_auc_std", None)
+    def escape_html(value):
+        return str(value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-            with mcols_std[0]:
-                st.metric("Subject Accuracy STD", "-" if acc_std is None else f"{acc_std:.3f}")
-            with mcols_std[1]:
-                st.metric("Subject F1 STD", "-" if f1_std is None else f"{f1_std:.3f}")
-            with mcols_std[2]:
-                st.metric("Subject AUC STD", "-" if auc_std is None else f"{auc_std:.3f}")
+    def render_metric_row(specs):
+        cols = st.columns(len(specs))
+        for col, (label, key) in zip(cols, specs):
+            with col:
+                value = fmt_value(metrics.get(key))
+                st.markdown(
+                    f"""
+                    <div class="metric-card">
+                      <div class="metric-label">{escape_html(label)}</div>
+                      <div class="metric-value">{escape_html(value)}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
-            st.markdown("**Window-level mean performance (Group CV)**")
-            window_cols = st.columns(6)
-            window_metric_specs = [
-                ("Accuracy", "window_acc_mean"),
-                ("F1", "window_f1_mean"),
-                ("AUC", "window_auc_mean"),
-                ("Balanced Acc", "window_balanced_accuracy_mean"),
-                ("Sensitivity", "window_sensitivity_mean"),
-                ("Specificity", "window_specificity_mean"),
-            ]
-            for col, (label, key) in zip(window_cols, window_metric_specs):
-                with col:
-                    v = metrics.get(key, None)
-                    st.metric(label, "-" if v is None else f"{v:.3f}")
+    def split_summary_rows():
+        return [
+            {
+                "split": "train",
+                "subjects": metrics.get("train_subjects", "-"),
+                "HC subjects": metrics.get("train_hc_subjects", "-"),
+                "PD subjects": metrics.get("train_pd_subjects", "-"),
+                "windows": metrics.get("train_windows", "-"),
+                "HC windows": metrics.get("train_hc_windows", "-"),
+                "PD windows": metrics.get("train_pd_windows", "-"),
+                "subject keys": metrics.get("train_subject_keys", "-"),
+            },
+            {
+                "split": "validation",
+                "subjects": metrics.get("val_subjects", "-"),
+                "HC subjects": metrics.get("val_hc_subjects", "-"),
+                "PD subjects": metrics.get("val_pd_subjects", "-"),
+                "windows": metrics.get("val_windows", "-"),
+                "HC windows": metrics.get("val_hc_windows", "-"),
+                "PD windows": metrics.get("val_pd_windows", "-"),
+                "subject keys": metrics.get("val_subject_keys", "-"),
+            },
+            {
+                "split": "test",
+                "subjects": metrics.get("test_subjects", "-"),
+                "HC subjects": metrics.get("test_hc_subjects", "-"),
+                "PD subjects": metrics.get("test_pd_subjects", "-"),
+                "windows": metrics.get("test_windows", "-"),
+                "HC windows": metrics.get("test_hc_windows", "-"),
+                "PD windows": metrics.get("test_pd_windows", "-"),
+                "subject keys": metrics.get("test_subject_keys", "-"),
+            },
+        ]
 
-            st.markdown("**Subject-level extra mean performance (Group CV)**")
-            subject_extra_cols = st.columns(3)
-            subject_extra_specs = [
-                ("Balanced Acc", "subject_balanced_accuracy_mean"),
-                ("Sensitivity", "subject_sensitivity_mean"),
-                ("Specificity", "subject_specificity_mean"),
-            ]
-            for col, (label, key) in zip(subject_extra_cols, subject_extra_specs):
-                with col:
-                    v = metrics.get(key, None)
-                    st.metric(label, "-" if v is None else f"{v:.3f}")
+    def render_group_metric_tables():
+        metric_table([
+            {
+                "level": "subject",
+                "accuracy mean": fmt_value(metrics.get("subject_acc_mean")),
+                "accuracy std": fmt_value(metrics.get("subject_acc_std")),
+                "F1 mean": fmt_value(metrics.get("subject_f1_mean")),
+                "F1 std": fmt_value(metrics.get("subject_f1_std")),
+                "AUC mean": fmt_value(metrics.get("subject_auc_mean")),
+                "AUC std": fmt_value(metrics.get("subject_auc_std")),
+                "balanced accuracy": fmt_value(metrics.get("subject_balanced_accuracy_mean")),
+                "sensitivity": fmt_value(metrics.get("subject_sensitivity_mean")),
+                "specificity": fmt_value(metrics.get("subject_specificity_mean")),
+            },
+            {
+                "level": "window",
+                "accuracy mean": fmt_value(metrics.get("window_acc_mean")),
+                "accuracy std": fmt_value(metrics.get("window_acc_std")),
+                "F1 mean": fmt_value(metrics.get("window_f1_mean")),
+                "F1 std": fmt_value(metrics.get("window_f1_std")),
+                "AUC mean": fmt_value(metrics.get("window_auc_mean")),
+                "AUC std": fmt_value(metrics.get("window_auc_std")),
+                "balanced accuracy": fmt_value(metrics.get("window_balanced_accuracy_mean")),
+                "sensitivity": fmt_value(metrics.get("window_sensitivity_mean")),
+                "specificity": fmt_value(metrics.get("window_specificity_mean")),
+            },
+        ])
 
-            fold_details = metrics.get("fold_details", [])
-            if fold_details:
-                with st.expander("Fold details", expanded=False):
-                    st.dataframe(pd.DataFrame(fold_details), use_container_width=True, hide_index=True)
+    def render_single_metric_tables():
+        rows = [{
+            "level": "window/sample",
+            "accuracy": fmt_value(metrics.get("accuracy")),
+            "F1": fmt_value(metrics.get("f1")),
+            "AUC": fmt_value(metrics.get("auc")),
+            "balanced accuracy": fmt_value(metrics.get("balanced_accuracy")),
+            "sensitivity": fmt_value(metrics.get("sensitivity")),
+            "specificity": fmt_value(metrics.get("specificity")),
+        }]
+
+        if last_action == "cnn":
+            rows.append({
+                "level": "subject",
+                "accuracy": fmt_value(metrics.get("subject_accuracy")),
+                "F1": fmt_value(metrics.get("subject_f1")),
+                "AUC": fmt_value(metrics.get("subject_auc")),
+                "balanced accuracy": fmt_value(metrics.get("subject_balanced_accuracy")),
+                "sensitivity": fmt_value(metrics.get("subject_sensitivity")),
+                "specificity": fmt_value(metrics.get("subject_specificity")),
+            })
+
+        metric_table(rows)
+
+    def render_metadata():
+        if last_action in ["cnn", "cnn_group_cv"]:
+            rows = [{
+                "subjects": metrics.get("n_subjects", metrics.get("subjects", "-")),
+                "recordings": metrics.get("n_recordings", "-"),
+                "raw channels": metrics.get("n_channels", "-"),
+                "CNN input channels": metrics.get("cnn_input_channels", "-"),
+                "spectrogram": f"{metrics.get('visual_height', '-')} x {metrics.get('visual_width', '-')}",
+                "threshold": fmt_value(metrics.get("threshold", metrics.get("threshold_mean", None))),
+            }]
+        elif last_action == "svm_group_cv":
+            rows = [{
+                "subjects": metrics.get("n_subjects", metrics.get("subjects", "-")),
+                "features": metrics.get("features", "-"),
+                "splits": metrics.get("n_splits", "-"),
+                "requested splits": metrics.get("requested_n_splits", "-"),
+                "threshold": fmt_value(metrics.get("threshold_mean")),
+            }]
         else:
-            # cnn and svm common metrivcs
-            mcols = st.columns(3)
+            rows = [{"model": model_name}]
 
-            acc = metrics.get("accuracy", None)
-            f1 = metrics.get("f1", None)
-            auc = metrics.get("auc", None)
+        metric_table(rows)
 
-            with mcols[0]:
-                st.metric("Accuracy", "-" if acc is None else f"{acc:.3f}")
-            with mcols[1]:
-                st.metric("F1", "-" if f1 is None else f"{f1:.3f}")
-            with mcols[2]:
-                st.metric("AUC", "-" if auc is None else f"{auc:.3f}")
+    def render_visualizations():
+        if last_action in ["svm_group_cv", "cnn_group_cv"]:
+            viz1, viz2 = st.columns(2, gap="large")
+            with viz1:
+                if st.session_state.last_cm_subject is not None:
+                    st.markdown("**Subject-level confusion matrix**")
+                    plot_cm(st.session_state.last_cm_subject, title="Subject-level Confusion Matrix")
+                else:
+                    st.info("Subject-level confusion matrix not available yet.")
+            with viz2:
+                if st.session_state.last_cm_window is not None:
+                    st.markdown("**Window-level confusion matrix**")
+                    plot_cm(st.session_state.last_cm_window, title="Window-level Confusion Matrix")
+                else:
+                    st.info("Window-level confusion matrix not available yet.")
+        else:
+            viz1, viz2 = st.columns(2, gap="large")
+            with viz1:
+                if st.session_state.last_cm is not None:
+                    plot_cm(st.session_state.last_cm)
+                else:
+                    st.info("Confusion matrix not available yet.")
+            with viz2:
+                if st.session_state.last_roc is not None:
+                    plot_roc(st.session_state.last_roc)
+                else:
+                    st.info("ROC curve not available yet.")
 
-        if st.session_state.last_action == "cnn":
-            st.markdown("**Subject-level performance (averaged window probabilities)**")
-            subject_cols = st.columns(3)
-            subject_acc = metrics.get("subject_accuracy", None)
-            subject_f1 = metrics.get("subject_f1", None)
-            subject_auc = metrics.get("subject_auc", None)
-
-            with subject_cols[0]:
-                st.metric("Subject Accuracy", "-" if subject_acc is None else f"{subject_acc:.3f}")
-            with subject_cols[1]:
-                st.metric("Subject F1", "-" if subject_f1 is None else f"{subject_f1:.3f}")
-            with subject_cols[2]:
-                st.metric("Subject AUC", "-" if subject_auc is None else f"{subject_auc:.3f}")
-
-            st.markdown("**CNN diagnostic checks**")
-            diag_cols = st.columns(4)
-
-            with diag_cols[0]:
-                v = metrics.get("window_mean_proba_pd_for_true_hc", None)
-                st.metric("Mean PD prob | true HC", "-" if v is None else f"{v:.3f}")
-
-            with diag_cols[1]:
-                v = metrics.get("window_mean_proba_pd_for_true_pd", None)
-                st.metric("Mean PD prob | true PD", "-" if v is None else f"{v:.3f}")
-
-            with diag_cols[2]:
-                v = metrics.get("val_subject_auc", None)
-                st.metric("Val subject AUC", "-" if v is None else f"{v:.3f}")
-
-            with diag_cols[3]:
-                v = metrics.get("subject_auc_if_flipped", None)
-                st.metric("Subject AUC if flipped", "-" if v is None else f"{v:.3f}")
-
+    def render_diagnostics():
+        if last_action == "cnn":
+            render_metric_row([
+                ("Mean PD prob | true HC", "window_mean_proba_pd_for_true_hc"),
+                ("Mean PD prob | true PD", "window_mean_proba_pd_for_true_pd"),
+                ("Val subject AUC", "val_subject_auc"),
+                ("Subject AUC if flipped", "subject_auc_if_flipped"),
+            ])
             if metrics.get("subject_looks_inverted", False):
                 st.warning(
                     "The model gives higher PD probabilities to HC subjects than to PD subjects. "
                     "Check label detection in the raw EEG manifest and inspect filenames."
                 )
-
-            st.markdown("**Subject split check**")
-
-            leakage_detected = metrics.get("subject_leakage_detected", None)
-
-            if leakage_detected is False:
-                st.success("No subject leakage detected between train, validation and test splits.")
-            elif leakage_detected is True:
-                st.error("Subject leakage detected.")
-            else:
-                st.info("Subject leakage check not available for this run.")
-
-            split_rows = [
-                {
-                    "split": "train",
-                    "subjects": metrics.get("train_subjects", "-"),
-                    "HC subjects": metrics.get("train_hc_subjects", "-"),
-                    "PD subjects": metrics.get("train_pd_subjects", "-"),
-                    "windows": metrics.get("train_windows", "-"),
-                    "HC windows": metrics.get("train_hc_windows", "-"),
-                    "PD windows": metrics.get("train_pd_windows", "-"),
-                    "subject keys": metrics.get("train_subject_keys", "-"),
-                },
-                {
-                    "split": "validation",
-                    "subjects": metrics.get("val_subjects", "-"),
-                    "HC subjects": metrics.get("val_hc_subjects", "-"),
-                    "PD subjects": metrics.get("val_pd_subjects", "-"),
-                    "windows": metrics.get("val_windows", "-"),
-                    "HC windows": metrics.get("val_hc_windows", "-"),
-                    "PD windows": metrics.get("val_pd_windows", "-"),
-                    "subject keys": metrics.get("val_subject_keys", "-"),
-                },
-                {
-                    "split": "test",
-                    "subjects": metrics.get("test_subjects", "-"),
-                    "HC subjects": metrics.get("test_hc_subjects", "-"),
-                    "PD subjects": metrics.get("test_pd_subjects", "-"),
-                    "windows": metrics.get("test_windows", "-"),
-                    "HC windows": metrics.get("test_hc_windows", "-"),
-                    "PD windows": metrics.get("test_pd_windows", "-"),
-                    "subject keys": metrics.get("test_subject_keys", "-"),
-                },
-            ]
-
-            st.dataframe(pd.DataFrame(split_rows), use_container_width=True, hide_index=True)
-
-        if st.session_state.last_action in ["svm_group_cv", "cnn_group_cv"]:
-            group_cv_name = "CNN Group CV" if st.session_state.last_action == "cnn_group_cv" else "SVM Group CV"
-            st.markdown(f"**{group_cv_name} diagnostic checks**")
-            diag_cols = st.columns(4)
-
-            with diag_cols[0]:
-                v = metrics.get("window_cv_mean_proba_pd_for_true_hc", None)
-                st.metric("Mean PD prob | true HC", "-" if v is None else f"{v:.3f}")
-
-            with diag_cols[1]:
-                v = metrics.get("window_cv_mean_proba_pd_for_true_pd", None)
-                st.metric("Mean PD prob | true PD", "-" if v is None else f"{v:.3f}")
-
-            with diag_cols[2]:
-                v = metrics.get("val_subject_auc_mean", None)
-                st.metric("Val subject AUC mean", "-" if v is None else f"{v:.3f}")
-
-            with diag_cols[3]:
-                v = metrics.get("subject_cv_auc_if_flipped", None)
-                st.metric("Subject AUC if flipped", "-" if v is None else f"{v:.3f}")
-
+        elif last_action in ["svm_group_cv", "cnn_group_cv"]:
+            group_cv_name = "CNN Group CV" if last_action == "cnn_group_cv" else "SVM Group CV"
+            render_metric_row([
+                ("Mean PD prob | true HC", "window_cv_mean_proba_pd_for_true_hc"),
+                ("Mean PD prob | true PD", "window_cv_mean_proba_pd_for_true_pd"),
+                ("Val subject AUC mean", "val_subject_auc_mean"),
+                ("Subject AUC if flipped", "subject_cv_auc_if_flipped"),
+            ])
             if metrics.get("subject_cv_looks_inverted", False):
                 st.warning(
                     "Across CV folds, the model gives higher PD probabilities to HC subjects than to PD subjects. "
@@ -1038,111 +991,36 @@ def render_results():
                 st.success(f"{group_cv_name} uses subject-level outer folds. No subject leakage was detected.")
             elif leakage_detected is True:
                 st.error("Subject leakage detected.")
-
-        if "error" in metrics:
-            st.error(metrics["error"])
-
-        # extra info for cnn
-        if st.session_state.last_action in ["cnn", "cnn_group_cv"]:
-            st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
-            extra_cols = st.columns(6)
-            with extra_cols[0]:
-                st.metric("Subjects", str(metrics.get("n_subjects", metrics.get("subjects", "-"))))
-            with extra_cols[1]:
-                st.metric("Recordings", str(metrics.get("n_recordings", "-")))
-            with extra_cols[2]:
-                st.metric("Raw channels", str(metrics.get("n_channels", "-")))
-            with extra_cols[3]:
-                st.metric("CNN input channels", str(metrics.get("cnn_input_channels", "-")))
-            with extra_cols[4]:
-                st.metric("Spectrogram", f"{metrics.get('visual_height', '-')} x {metrics.get('visual_width', '-')}")
-            with extra_cols[5]:
-                threshold = metrics.get("threshold", metrics.get("threshold_mean", None))
-                st.metric("Threshold", "-" if threshold is None else f"{threshold:.3f}")
-        elif st.session_state.last_action == "svm_group_cv":
-            st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
-            extra_cols = st.columns(4)
-            with extra_cols[0]:
-                st.metric("Subjects", str(metrics.get("n_subjects", metrics.get("subjects", "-"))))
-            with extra_cols[1]:
-                st.metric("Features", str(metrics.get("features", "-")))
-            with extra_cols[2]:
-                st.metric("Splits", str(metrics.get("n_splits", "-")))
-            with extra_cols[3]:
-                threshold = metrics.get("threshold_mean", None)
-                st.metric("Threshold", "-" if threshold is None else f"{threshold:.3f}")
-
-    st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
-
-    st.markdown(
-        """
-        <div class="card">
-          <div class="card-title">
-            <div style="font-weight:800; font-size:1.05rem;">Visualizations</div>
-            <div class="subtle">Confusion matrix and ROC</div>
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.markdown("<div style='height:5px;'></div>", unsafe_allow_html=True)
-
-    # two cms for group cv, one subject level and one window level
-    if st.session_state.last_action in ["svm_group_cv", "cnn_group_cv"]:
-        viz1, viz2 = st.columns(2, gap="large")
-
-        with viz1:
-            if st.session_state.last_cm_subject is not None:
-                st.markdown("**Subject-level confusion matrix**")
-                plot_cm(st.session_state.last_cm_subject, title="Subject-level Confusion Matrix")
             else:
-                st.info("Subject-level confusion matrix not available yet.")
-
-        with viz2:
-            if st.session_state.last_cm_window is not None:
-                st.markdown("**Window-level confusion matrix**")
-                plot_cm(st.session_state.last_cm_window, title="Window-level Confusion Matrix")
-            else:
-                st.info("Window-level confusion matrix not available yet.")
-    # cm and roc for cnn and svm
-    else:
-        viz1, viz2 = st.columns(2, gap="large")
-
-        with viz1:
-            if st.session_state.last_cm is not None:
-                plot_cm(st.session_state.last_cm)
-            else:
-                st.info("Confusion matrix not available yet.")
-
-        with viz2:
-            if st.session_state.last_roc is not None:
-                plot_roc(st.session_state.last_roc)
-            else:
-                st.info("ROC curve not available yet.")
-
-    st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
-
-    st.markdown(
-        """
-        <div class="card">
-          <div class="card-title">
-            <div style="font-weight:800; font-size:1.05rem;">Sample prediction</div>
-            <div class="subtle">Inspect one sample prediction</div>
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.markdown("<div style='height:5px;'></div>", unsafe_allow_html=True)
-
-    # sample prediction for cnn
-    if st.session_state.last_action == "cnn":
-        pred_df = st.session_state.raw_cnn_predictions
-        if pred_df is None or pred_df.empty:
-            st.info("Sample prediction is available after Train CNN.")
+                st.info("Subject leakage check not available for this run.")
         else:
+            st.info("No extra diagnostics are available for this run.")
+
+    def render_fold_details():
+        fold_details = metrics.get("fold_details", [])
+        if fold_details:
+            st.markdown("**Fold details**")
+            st.dataframe(pd.DataFrame(fold_details), use_container_width=True, hide_index=True)
+        elif last_action == "cnn":
+            st.markdown("**Subject split check**")
+            leakage_detected = metrics.get("subject_leakage_detected", None)
+            if leakage_detected is False:
+                st.success("No subject leakage detected between train, validation and test splits.")
+            elif leakage_detected is True:
+                st.error("Subject leakage detected.")
+            else:
+                st.info("Subject leakage check not available for this run.")
+            st.dataframe(pd.DataFrame(split_summary_rows()), use_container_width=True, hide_index=True)
+        else:
+            st.info("Fold details are available after running Group CV.")
+
+    def render_sample_prediction():
+        if last_action == "cnn":
+            pred_df = st.session_state.raw_cnn_predictions
+            if pred_df is None or pred_df.empty:
+                st.info("Sample prediction is available after a CNN run.")
+                return
+
             sample_idx = st.number_input(
                 "Select CNN test sample index",
                 min_value=0,
@@ -1151,15 +1029,11 @@ def render_results():
                 step=1,
                 key="sample_prediction_index_cnn",
             )
-
             row = pred_df.iloc[int(sample_idx)]
-            # convers labels to text
-            true_label = "PD" if int(row["true_label"]) == 1 else "HC"
-            pred_label = "PD" if int(row["pred_label"]) == 1 else "HC"
-            # compute confidenec and correctness
+            true_label = label_from_int(row["true_label"])
+            pred_label = label_from_int(row["pred_label"])
             confidence = float(max(row["proba_pd"], row["proba_hc"]))
             correct = int(row["true_label"]) == int(row["pred_label"])
-            # displays info about selected samplle
             info_df = pd.DataFrame([{
                 "recording": row.get("recording", ""),
                 "subject_key": row.get("subject_key", ""),
@@ -1168,99 +1042,56 @@ def render_results():
                 "true_label": true_label,
             }])
 
-            st.dataframe(info_df, use_container_width=True, hide_index=True)
+        elif last_action == "svm":
+            df = st.session_state.dataset_df
+            model = st.session_state.last_model
+            if df is None or model is None:
+                st.info("Sample prediction is available after an SVM run.")
+                return
 
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                st.metric("True label", true_label)
-            with c2:
-                st.metric("Predicted label", pred_label)
-            with c3:
-                st.metric("Confidence", f"{confidence:.3f}")
-
-            c4, c5 = st.columns(2)
-            with c4:
-                st.metric("Probability PD", f"{float(row['proba_pd']):.3f}")
-            with c5:
-                st.metric("Probability HC", f"{float(row['proba_hc']):.3f}")
-
-            if correct:
-                st.success("Correct prediction")
-            else:
-                st.error("Incorrect prediction")
-
-    # sample prediction for svm
-    elif st.session_state.last_action == "svm":
-        df = st.session_state.dataset_df
-        model = st.session_state.last_model
-
-        if df is None or model is None:
-            st.info("Sample prediction is available after Train SVM.")
-        else:
             try:
-                # finds which col contains true class labels
                 label_candidates = [c for c in df.columns if c.lower() in ["label", "class", "y", "target"]]
                 if not label_candidates:
                     st.warning("No label column found in dataset.")
-                else:
-                    ycol = label_candidates[0]
-                    sample_idx = st.number_input(
-                        "Select sample index",
-                        min_value=0,
-                        max_value=len(df) - 1,
-                        value=0,
-                        step=1,
-                        key="sample_prediction_index_svm",
-                    )
+                    return
 
-                    X_all, y_all, xy_err = get_xy(df)
-                    if xy_err:
-                        st.warning(xy_err)
-                        return
+                sample_idx = st.number_input(
+                    "Select sample index",
+                    min_value=0,
+                    max_value=len(df) - 1,
+                    value=0,
+                    step=1,
+                    key="sample_prediction_index_svm",
+                )
 
-                    sample = df.iloc[[sample_idx]].copy()
-                    y_true = y_all.iloc[sample_idx]
-                    X_sample = X_all.iloc[[sample_idx]]
+                X_all, y_all, xy_err = get_xy(df)
+                if xy_err:
+                    st.warning(xy_err)
+                    return
 
-                    # run svm prediction
-                    pred = model.predict(X_sample.values)[0]
-                    proba = model.predict_proba(X_sample.values)[0]
-
-                    pred_label = "PD" if int(pred) == 1 else "HC"
-                    true_label = "PD" if int(y_true) == 1 else "HC"
-
-                    confidence = float(max(proba))
-                    correct = int(pred) == int(y_true)
-
-                    c1, c2, c3 = st.columns(3)
-                    with c1:
-                        st.metric("True label", true_label)
-                    with c2:
-                        st.metric("Predicted label", pred_label)
-                    with c3:
-                        st.metric("Confidence", f"{confidence:.3f}")
-
-                    c4, c5 = st.columns(2)
-                    with c4:
-                        st.metric("Probability PD", f"{proba[1]:.3f}")
-                    with c5:
-                        st.metric("Probability HC", f"{proba[0]:.3f}")
-
-                    if correct:
-                        st.success("Correct prediction")
-                    else:
-                        st.error("Incorrect prediction")
-
+                y_true = y_all.iloc[int(sample_idx)]
+                X_sample = X_all.iloc[[int(sample_idx)]]
+                pred = model.predict(X_sample.values)[0]
+                proba = model.predict_proba(X_sample.values)[0]
+                true_label = label_from_int(y_true)
+                pred_label = label_from_int(pred)
+                confidence = float(max(proba))
+                correct = int(pred) == int(y_true)
+                info_df = pd.DataFrame([{
+                    "row_index": int(df.index[int(sample_idx)]),
+                    "true_label": true_label,
+                }])
+                row = {"proba_pd": float(proba[1]), "proba_hc": float(proba[0])}
             except Exception as e:
                 st.error(f"Could not generate sample prediction: {e}")
+                return
 
-    # sample prediction for svm/cnn group cv
-    elif st.session_state.last_action in ["svm_group_cv", "cnn_group_cv"]:
-        pred_df = st.session_state.last_group_cv_predictions
+        elif last_action in ["svm_group_cv", "cnn_group_cv"]:
+            pred_df = st.session_state.last_group_cv_predictions
+            if pred_df is None or pred_df.empty:
+                st.info("Sample prediction is available after running Group CV.")
+                return
 
-        if pred_df is None or pred_df.empty:
-            st.info("Sample prediction is available after running Group CV.")
-        else:
             sample_idx = st.number_input(
                 "Select sample index",
                 min_value=0,
@@ -1269,69 +1100,49 @@ def render_results():
                 step=1,
                 key="sample_prediction_index_group_cv",
             )
-
             row = pred_df.iloc[int(sample_idx)]
-
-            true_label = "PD" if int(row["true_label"]) == 1 else "HC"
-            pred_label = "PD" if int(row["pred_label"]) == 1 else "HC"
-
+            true_label = label_from_int(row["true_label"])
+            pred_label = label_from_int(row["pred_label"])
             confidence = float(max(row["proba_pd"], row["proba_hc"]))
             correct = int(row["true_label"]) == int(row["pred_label"])
-            # shows sample metadata
             info_df = pd.DataFrame([{
-                "row_index": int(row["row_index"]),
-                "fold": int(row["fold"]),
+                "row_index": int(row.get("row_index", -1)),
+                "fold": int(row.get("fold", -1)),
                 "subject_id": row.get("subject_id", ""),
                 "subject_key": row.get("subject_key", ""),
                 "window_start": int(row.get("window_start", -1)),
                 "true_label": true_label,
             }])
+        else:
+            st.info("Train a model first.")
+            return
 
-            st.dataframe(info_df, use_container_width=True, hide_index=True)
+        st.dataframe(info_df, use_container_width=True, hide_index=True)
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.metric("True label", true_label)
+        with c2:
+            st.metric("Predicted label", pred_label)
+        with c3:
+            st.metric("Confidence", f"{confidence:.3f}")
 
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                st.metric("True label", true_label)
-            with c2:
-                st.metric("Predicted label", pred_label)
-            with c3:
-                st.metric("Confidence", f"{confidence:.3f}")
+        c4, c5 = st.columns(2)
+        with c4:
+            st.metric("Probability PD", f"{float(row['proba_pd']):.3f}")
+        with c5:
+            st.metric("Probability HC", f"{float(row['proba_hc']):.3f}")
 
-            c4, c5 = st.columns(2)
-            with c4:
-                st.metric("Probability PD", f"{float(row['proba_pd']):.3f}")
-            with c5:
-                st.metric("Probability HC", f"{float(row['proba_hc']):.3f}")
+        if correct:
+            st.success("Correct prediction")
+        else:
+            st.error("Incorrect prediction")
 
-            if correct:
-                st.success("Correct prediction")
-            else:
-                st.error("Incorrect prediction")
-    else:
-        st.info("Train a model first.")
+    def render_export():
+        runs = load_runs(limit=1)
+        if not runs:
+            st.info("No run record to export yet.")
+            return
 
-    st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
-
-    st.markdown(
-        """
-        <div class="card">
-          <div class="card-title">
-            <div style="font-weight:800; font-size:1.05rem;">Export and traceability</div>
-            <div class="subtle">Download latest run JSON</div>
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.markdown("<div style='height:5px;'></div>", unsafe_allow_html=True)
-
-    # loads last saved run
-    runs = load_runs(limit=1)
-    if not runs:
-        st.info("No run record to export yet.")
-    else:
-        # shows last run and enables download
         last = runs[0]
         st.json(last, expanded=False)
         payload = json.dumps(last, ensure_ascii=False, indent=2).encode("utf-8")
@@ -1342,6 +1153,57 @@ def render_results():
             mime="application/json",
             use_container_width=True,
         )
+
+    if "error" in metrics:
+        st.error(metrics["error"])
+
+    summary_specs = (
+        [
+            ("Subject Accuracy", "subject_acc_mean"),
+            ("Subject F1", "subject_f1_mean"),
+            ("Subject AUC", "subject_auc_mean"),
+        ]
+        if last_action in ["svm_group_cv", "cnn_group_cv"]
+        else [
+            ("Accuracy", "accuracy"),
+            ("F1", "f1"),
+            ("AUC", "auc"),
+        ]
+    )
+    render_metric_row(summary_specs)
+
+    st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
+    render_metadata()
+
+    overview_tab, viz_tab, diagnostics_tab, folds_tab, sample_tab, export_tab = st.tabs([
+        "Overview",
+        "Visualizations",
+        "Diagnostics",
+        "Fold Details",
+        "Sample Prediction",
+        "Export",
+    ])
+
+    with overview_tab:
+        if last_action in ["svm_group_cv", "cnn_group_cv"]:
+            render_group_metric_tables()
+        else:
+            render_single_metric_tables()
+
+    with viz_tab:
+        render_visualizations()
+
+    with diagnostics_tab:
+        render_diagnostics()
+
+    with folds_tab:
+        render_fold_details()
+
+    with sample_tab:
+        render_sample_prediction()
+
+    with export_tab:
+        render_export()
 
 
 def render_raw_viewer():

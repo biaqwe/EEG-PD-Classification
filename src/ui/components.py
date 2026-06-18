@@ -59,6 +59,7 @@ def status_dot():
 def render_topbar():
     df = st.session_state.dataset_df
     ds_name = st.session_state.dataset_name or st.session_state.raw_dataset_name or "No dataset"
+    page = st.session_state.page
 
     if df is not None:
         n_rows, n_channels = dataset_summary(df)
@@ -69,23 +70,52 @@ def render_topbar():
     else:
         n_rows, n_channels = None, None
 
+    help_html = ""
+    if page == "Import":
+        help_html = (
+            '<div class="help-card topbar-help">'
+            '<div class="help-title">How to use</div>'
+            '<div class="small">'
+            '- Upload raw EEG recordings when you want to run <b>CNN Group CV</b>.<br/>'
+            '- Upload a ready CSV when you already have tabular <b>SVM</b> features.<br/>'
+            '- Upload an EEG .mat file when you want the app to generate <b>SVM</b> features using the saved preprocessing config.'
+            '</div>'
+            '</div>'
+        )
+    elif page == "Preprocess":
+        help_html = (
+            '<div class="help-card topbar-help">'
+            '<div class="help-title">What this does</div>'
+            '<div class="small">'
+            '- Controls how EEG is filtered, windowed and converted before modelling.<br/>'
+            '- Used when generating spectrograms for <b>CNN Group CV</b>.<br/>'
+            '- Also used when converting EEG .mat files into tabular <b>SVM</b> features.'
+            '</div>'
+            '</div>'
+        )
+
+    main_html = (
+        "<div>"
+        '<h2 style="margin:0; padding:0;">EEG Classification (PD vs HC)</h2>'
+        '<div class="subtle" style="margin-top:2px;">'
+        "Intelligent system for EEG signal analysis and classification (PD vs Healthy Controls)"
+        "</div>"
+        '<div style="margin-top:10px; display:flex; gap:10px; flex-wrap:wrap;">'
+        f'<span class="pill">Dataset: <b style="color:var(--txt)">{ds_name}</b></span>'
+        f'<span class="pill">Rows/Recordings: <b style="color:var(--txt)">{n_rows if n_rows is not None else "-"}</b></span>'
+        f'<span class="pill">Channels/Features: <b style="color:var(--txt)">{n_channels if n_channels is not None else "-"}</b></span>'
+        f'<span class="pill">Status: {status_badge()}</span>'
+        "</div>"
+        "</div>"
+    )
+    content_html = (
+        f'<div class="topbar-grid">{main_html}<div class="topbar-help-wrap">{help_html}</div></div>'
+        if help_html
+        else main_html
+    )
+
     st.markdown(
-        f"""
-        <div class="topbar">
-          <div>
-            <h2 style="margin:0; padding:0;">EEG Classification (PD vs HC)</h2>
-            <div class="subtle" style="margin-top:2px;">
-              Intelligent system for EEG signal analysis and classification (PD vs Healthy Controls)
-            </div>
-            <div style="margin-top:10px; display:flex; gap:10px; flex-wrap:wrap;">
-              <span class="pill">Dataset: <b style="color:var(--txt)">{ds_name}</b></span>
-              <span class="pill">Rows/Recordings: <b style="color:var(--txt)">{n_rows if n_rows is not None else "-"}</b></span>
-              <span class="pill">Channels/Features: <b style="color:var(--txt)">{n_channels if n_channels is not None else "-"}</b></span>
-              <span class="pill">Status: {status_badge()}</span>
-            </div>
-          </div>
-        </div>
-        """,
+        f'<div class="topbar">{content_html}</div>',
         unsafe_allow_html=True,
     )
 
