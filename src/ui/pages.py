@@ -67,29 +67,29 @@ def render_dashboard():
                 <div style="font-weight:800; font-size:1.05rem;">Overview</div>
               </div>
               <div class="subtle">
-                Use raw BrainVision EEG for CNN and CSV / MAT-based tabular data for SVM baselines.
+                Track the loaded tabular feature table for SVM Group CV and raw EEG recordings for CNN Group CV.
               </div>
               <div style="height:10px;"></div>
               <div class="kpis">
                 <div class="kpi">
-                  <div class="lbl">SVM dataset</div>
+                  <div class="lbl">Feature table</div>
                   <div class="val">{st.session_state.dataset_name or "Not loaded"}</div>
-                  <div class="hint">Used by SVM and SVM Group CV</div>
+                  <div class="hint">Input for SVM Group CV</div>
                 </div>
                 <div class="kpi">
-                  <div class="lbl">SVM rows</div>
+                  <div class="lbl">Tabular samples</div>
                   <div class="val">{csv_rows}</div>
-                  <div class="hint">Tabular samples</div>
+                  <div class="hint">{csv_features} numeric features</div>
                 </div>
                 <div class="kpi">
-                  <div class="lbl">Raw recordings</div>
+                  <div class="lbl">EEG recordings</div>
                   <div class="val">{raw_recordings}</div>
-                  <div class="hint">Used by raw EEG CNN</div>
+                  <div class="hint">Input for CNN Group CV</div>
                 </div>
                 <div class="kpi">
-                  <div class="lbl">Raw subjects</div>
+                  <div class="lbl">EEG subjects</div>
                   <div class="val">{raw_subjects}</div>
-                  <div class="hint">Detected BrainVision subjects</div>
+                  <div class="hint">Subject groups for validation</div>
                 </div>
               </div>
               <div style="height:10px;"></div>
@@ -371,23 +371,35 @@ def render_import():
 
         st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
 
-        # for .csv upload
-        uploaded_csv = st.file_uploader(
-            "Upload CSV dataset",
-            type=["csv"],
-            accept_multiple_files=False,
-            key="csv_uploader",
-            help="Ready-made tabular dataset for SVM.",
+        svm_source = st.radio(
+            "SVM source",
+            ["CSV feature table", "EEG .mat file"],
+            horizontal=True,
+            key="svm_source_choice",
+            help="Choose one source type before loading the SVM dataset.",
         )
 
-        # for .mat upload
-        uploaded_mat = st.file_uploader(
-            "Upload EEG .mat dataset",
-            type=["mat"],
-            accept_multiple_files=False,
-            key="mat_uploader",
-            help="Will be converted to tabular SVM features using the saved preprocessing config.",
-        )
+        uploaded_csv = None
+        uploaded_mat = None
+
+        if svm_source == "CSV feature table":
+            # for .csv upload
+            uploaded_csv = st.file_uploader(
+                "Upload CSV dataset",
+                type=["csv"],
+                accept_multiple_files=False,
+                key="csv_uploader",
+                help="Ready-made tabular feature table for SVM.",
+            )
+        else:
+            # for .mat upload
+            uploaded_mat = st.file_uploader(
+                "Upload EEG .mat dataset",
+                type=["mat"],
+                accept_multiple_files=False,
+                key="mat_uploader",
+                help="Will be converted to tabular SVM features using the saved preprocessing config.",
+            )
 
         svm_name = st.text_input(
             "SVM dataset name",
@@ -395,7 +407,10 @@ def render_import():
             key="csv_dataset_name_input",
         )
 
-        can_load_svm = (uploaded_csv is not None) or (uploaded_mat is not None)
+        can_load_svm = (
+            (svm_source == "CSV feature table" and uploaded_csv is not None)
+            or (svm_source == "EEG .mat file" and uploaded_mat is not None)
+        )
 
         if st.button(
             "Load SVM dataset",
@@ -404,9 +419,7 @@ def render_import():
             key="load_svm_btn",
         ): # uploaded files are analyzed
             try:
-                if uploaded_csv is not None and uploaded_mat is not None:
-                    st.error("Please upload only one source at a time: either CSV or MAT.")
-                elif uploaded_csv is not None:
+                if svm_source == "CSV feature table" and uploaded_csv is not None:
                     df = parse_csv(uploaded_csv)
                     if df is None:
                         raise ValueError("Could not parse CSV file.")
@@ -432,7 +445,7 @@ def render_import():
                     st.success("CSV dataset loaded successfully.")
                     st.rerun()
 
-                elif uploaded_mat is not None:
+                elif svm_source == "EEG .mat file" and uploaded_mat is not None:
                     st.session_state.mat_file_payload = uploaded_mat.getvalue()
                     st.session_state.mat_file_name = uploaded_mat.name
 
@@ -470,6 +483,8 @@ def render_import():
                     )
                     st.success("MAT dataset converted and loaded successfully.")
                     st.rerun()
+                else:
+                    st.warning("Choose a source and upload a file before loading the SVM dataset.")
 
             except Exception as e:
                 set_status("Error")
@@ -805,17 +820,71 @@ def render_results():
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
     def escape_html(value):
-        return str(value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        return (
+            str(value)
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace('"', "&quot;")
+        )
+
+    metric_help = {
+        "accuracy": "Share of samples classified correctly.",
+        "balanced_accuracy": "Average of sensitivity and specificity. Useful when the HC and PD classes are not perfectly balanced.",
+        "sensitivity": "Recall for the PD class: the share of true PD cases correctly detected.",
+        "specificity": "Recall for the HC class: the share of true HC cases correctly detected.",
+        "subject_acc_mean": "Average subject-level accuracy across CV folds. Subject-level metrics combine all windows from the same subject first.",
+        "subject_acc_std": "Variation in subject-level accuracy across CV folds. Lower values mean performance is more stable between folds.",
+        "subject_f1_mean": "Average subject-level F1 score across CV folds. F1 balances precision and recall for the PD class.",
+        "subject_f1_std": "Variation in subject-level F1 across CV folds. Lower values mean the F1 score is more stable between folds.",
+        "subject_auc_mean": "Average subject-level ROC AUC across CV folds. Higher means better separation between HC and PD subjects.",
+        "subject_auc_std": "Variation in subject-level ROC AUC across CV folds. Lower values mean AUC is more stable between folds.",
+        "subject_accuracy": "Subject-level accuracy for the latest run. Windows from the same subject are combined before scoring.",
+        "subject_f1": "Subject-level F1 score for the latest run. F1 balances precision and recall for the PD class.",
+        "subject_auc": "Subject-level ROC AUC for the latest run. Higher means better separation between HC and PD subjects.",
+        "subject_balanced_accuracy": "Subject-level balanced accuracy for the latest run.",
+        "subject_sensitivity": "Subject-level PD recall: the share of true PD subjects correctly detected.",
+        "subject_specificity": "Subject-level HC recall: the share of true HC subjects correctly detected.",
+        "subject_balanced_accuracy_mean": "Average subject-level balanced accuracy across CV folds.",
+        "subject_sensitivity_mean": "Average subject-level PD recall across CV folds.",
+        "subject_specificity_mean": "Average subject-level HC recall across CV folds.",
+        "window_acc_mean": "Average window-level accuracy across CV folds. Each EEG window is scored separately.",
+        "window_acc_std": "Variation in window-level accuracy across CV folds.",
+        "window_f1_mean": "Average window-level F1 score across CV folds.",
+        "window_f1_std": "Variation in window-level F1 across CV folds.",
+        "window_auc_mean": "Average window-level ROC AUC across CV folds.",
+        "window_auc_std": "Variation in window-level ROC AUC across CV folds.",
+        "window_balanced_accuracy_mean": "Average window-level balanced accuracy across CV folds.",
+        "window_sensitivity_mean": "Average window-level PD recall across CV folds.",
+        "window_specificity_mean": "Average window-level HC recall across CV folds.",
+        "window_mean_proba_pd_for_true_hc": "Average predicted PD probability for windows that are truly HC. Lower is better.",
+        "window_mean_proba_pd_for_true_pd": "Average predicted PD probability for windows that are truly PD. Higher is better.",
+        "window_cv_mean_proba_pd_for_true_hc": "Average predicted PD probability for true HC windows across all CV folds. Lower is better.",
+        "window_cv_mean_proba_pd_for_true_pd": "Average predicted PD probability for true PD windows across all CV folds. Higher is better.",
+        "val_subject_auc": "Subject-level validation AUC used while tuning the CNN threshold.",
+        "val_subject_auc_mean": "Average subject-level validation AUC across CNN CV folds. SVM Group CV does not use an inner validation split, so this can be unavailable.",
+        "subject_auc_if_flipped": "AUC that would result if PD and HC probabilities were reversed. Useful for detecting inverted labels or predictions.",
+        "subject_cv_auc_if_flipped": "Cross-validation AUC if PD and HC probabilities were reversed. Useful for spotting inverted labels or predictions.",
+        "f1": "F1 score for the PD class, balancing precision and recall.",
+        "auc": "ROC AUC, measuring how well the model separates HC from PD across probability thresholds.",
+    }
 
     def render_metric_row(specs):
         cols = st.columns(len(specs))
         for col, (label, key) in zip(cols, specs):
             with col:
                 value = fmt_value(metrics.get(key))
+                tooltip = metric_help.get(key, f"{label} for the latest run.")
                 st.markdown(
                     f"""
                     <div class="metric-card">
-                      <div class="metric-label">{escape_html(label)}</div>
+                      <div class="metric-label">
+                        <span>{escape_html(label)}</span>
+                        <span class="metric-tooltip" tabindex="0" aria-label="{escape_html(tooltip)}">
+                          ?
+                          <span class="metric-tooltip-text">{escape_html(tooltip)}</span>
+                        </span>
+                      </div>
                       <div class="metric-value">{escape_html(value)}</div>
                     </div>
                     """,
@@ -1120,17 +1189,17 @@ def render_results():
         st.dataframe(info_df, use_container_width=True, hide_index=True)
         c1, c2, c3 = st.columns(3)
         with c1:
-            st.metric("True label", true_label)
+            st.metric("True label", true_label, help="Ground-truth class for the selected sample or subject.")
         with c2:
-            st.metric("Predicted label", pred_label)
+            st.metric("Predicted label", pred_label, help="Class predicted by the model using the selected decision threshold.")
         with c3:
-            st.metric("Confidence", f"{confidence:.3f}")
+            st.metric("Confidence", f"{confidence:.3f}", help="The larger of the HC and PD predicted probabilities.")
 
         c4, c5 = st.columns(2)
         with c4:
-            st.metric("Probability PD", f"{float(row['proba_pd']):.3f}")
+            st.metric("Probability PD", f"{float(row['proba_pd']):.3f}", help="Model-estimated probability that the selected item belongs to the PD class.")
         with c5:
-            st.metric("Probability HC", f"{float(row['proba_hc']):.3f}")
+            st.metric("Probability HC", f"{float(row['proba_hc']):.3f}", help="Model-estimated probability that the selected item belongs to the HC class.")
 
         if correct:
             st.success("Correct prediction")

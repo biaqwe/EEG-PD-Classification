@@ -21,6 +21,7 @@ from scripts.make_features_mat import build_mat_features_from_file
 
 def parse_csv(uploaded) -> Optional[pd.DataFrame]: # reads csv file
     try:
+        uploaded.seek(0)
         return pd.read_csv(uploaded)
     except Exception:
         try:

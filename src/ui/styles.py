@@ -430,6 +430,7 @@ BASE_CSS = """
     border-radius: 16px;
     background: rgba(255,255,255,.03);
     padding: 14px 20px;
+    overflow: visible;
   }
 
   .metric-label{
@@ -437,6 +438,58 @@ BASE_CSS = """
     font-size: 1rem;
     font-weight: 650;
     line-height: 1.25;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    position: relative;
+  }
+
+  .metric-tooltip{
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 19px;
+    height: 19px;
+    border-radius: 999px;
+    border: 1px solid rgba(106,166,255,.45);
+    background: rgba(106,166,255,.13);
+    color: rgba(231,240,255,.96) !important;
+    font-size: 0.78rem;
+    font-weight: 800;
+    cursor: help;
+    user-select: none;
+  }
+
+  .metric-tooltip-text{
+    position: absolute;
+    z-index: 1000;
+    left: 50%;
+    bottom: calc(100% + 10px);
+    transform: translateX(-50%) translateY(4px);
+    width: min(280px, 70vw);
+    padding: 9px 10px;
+    border-radius: 10px;
+    border: 1px solid rgba(106,166,255,.36);
+    background: rgba(8,13,27,.98);
+    box-shadow: 0 14px 30px rgba(0,0,0,.38);
+    color: rgba(255,255,255,.9) !important;
+    font-size: 0.84rem;
+    font-weight: 500;
+    line-height: 1.35;
+    text-align: left;
+    pointer-events: none;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity .12s ease, transform .12s ease, visibility .12s ease;
+  }
+
+  .metric-tooltip:hover .metric-tooltip-text,
+  .metric-tooltip:focus .metric-tooltip-text{
+    opacity: 1;
+    visibility: visible;
+    transform: translateX(-50%) translateY(0);
   }
 
   .metric-value{
