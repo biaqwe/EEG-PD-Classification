@@ -13,7 +13,7 @@ from src.ui.pages import (
 )
 
 st.set_page_config(
-    page_title="EEG Classification (PD vs HC)",
+    page_title="EEG-Based Parkinson's Classification",
     layout="wide",
     initial_sidebar_state="expanded"
 )

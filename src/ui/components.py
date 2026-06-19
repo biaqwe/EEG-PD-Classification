@@ -96,9 +96,9 @@ def render_topbar():
 
     main_html = (
         "<div>"
-        '<h2 style="margin:0; padding:0;">EEG Classification (PD vs HC)</h2>'
+        '<h2 style="margin:0; padding:0;">EEG-Based Parkinson&#39;s Classification</h2>'
         '<div class="subtle" style="margin-top:2px;">'
-        "Intelligent system for EEG signal analysis and classification (PD vs Healthy Controls)"
+        "Signal analysis and model evaluation for Parkinson's vs healthy control EEG data"
         "</div>"
         '<div style="margin-top:10px; display:flex; gap:10px; flex-wrap:wrap;">'
         f'<span class="pill">Dataset: <b style="color:var(--txt)">{ds_name}</b></span>'
