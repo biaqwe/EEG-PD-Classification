@@ -3,7 +3,7 @@ import streamlit as st
 from src.state import init_session_state
 from src.ui.styles import inject_styles
 from src.ui.sidebar import sidebar_nav
-from src.ui.components import render_topbar
+from src.ui.components import render_topbar, spacer
 from src.ui.pages import (
     render_dashboard,
     render_import,
@@ -24,7 +24,7 @@ sidebar_nav()
 render_topbar()
 
 page = st.session_state.page
-st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
+spacer("md")
 
 if page == "Dashboard":
     render_dashboard()

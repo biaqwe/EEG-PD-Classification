@@ -31,7 +31,14 @@ from src.raw_eeg import (
 )
 from src.state import log, set_status
 from src.storage import load_runs, save_run
-from src.ui.components import plot_cm, plot_roc, status_dot
+from src.ui.components import (
+    escape_html,
+    plot_cm,
+    plot_roc,
+    render_empty_state,
+    render_section_header,
+    spacer,
+)
 from src.utils import now_iso
 
 
@@ -64,56 +71,44 @@ def render_dashboard():
             f"""
             <div class="card">
               <div class="card-title">
-                <div style="font-weight:800; font-size:1.05rem;">Overview</div>
+                <div>
+                  <div class="section-title">Overview</div>
+                  <div class="section-subtitle">Loaded feature tables, raw EEG recordings, and validation grouping at a glance</div>
+                </div>
               </div>
-              <div class="subtle">
-                Track the loaded tabular feature table for SVM Group CV and raw EEG recordings for CNN Group CV.
-              </div>
-              <div style="height:10px;"></div>
+              <div class="spacer-sm"></div>
               <div class="kpis">
                 <div class="kpi">
                   <div class="lbl">Feature table</div>
-                  <div class="val">{st.session_state.dataset_name or "Not loaded"}</div>
+                  <div class="val">{escape_html(st.session_state.dataset_name or "Not loaded")}</div>
                   <div class="hint">Input for SVM Group CV</div>
                 </div>
                 <div class="kpi">
                   <div class="lbl">Tabular samples</div>
-                  <div class="val">{csv_rows}</div>
-                  <div class="hint">{csv_features} numeric features</div>
+                  <div class="val">{escape_html(csv_rows)}</div>
+                  <div class="hint">{escape_html(csv_features)} numeric features</div>
                 </div>
                 <div class="kpi">
                   <div class="lbl">EEG recordings</div>
-                  <div class="val">{raw_recordings}</div>
+                  <div class="val">{escape_html(raw_recordings)}</div>
                   <div class="hint">Input for CNN Group CV</div>
                 </div>
                 <div class="kpi">
                   <div class="lbl">EEG subjects</div>
-                  <div class="val">{raw_subjects}</div>
+                  <div class="val">{escape_html(raw_subjects)}</div>
                   <div class="hint">Subject groups for validation</div>
                 </div>
               </div>
-              <div style="height:10px;"></div>
-              <div class="pill">Status: {st.session_state.run_status}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
-
-        st.markdown(
-            """
-            <div class="card">
-              <div class="card-title">
-                <div style="font-weight:800; font-size:1.05rem;">Recent activity</div>
-                <div class="subtle">Local traceability (runs/)</div>
+              <div class="pill-row">
+                <div class="pill">Status: <b>{escape_html(st.session_state.run_status)}</b></div>
               </div>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-        st.markdown("<div style='height:5px;'></div>", unsafe_allow_html=True)
+        spacer("lg")
+        render_section_header("Recent activity", "Local traceability from saved runs")
 
         # loads last 8 runs
         runs = load_runs(limit=8)
@@ -122,52 +117,27 @@ def render_dashboard():
             cols = ["timestamp", "action", "status", "dataset_name"]
             cols = [c for c in cols if c in df_runs.columns]
             # displays runs as table
-            st.dataframe(df_runs[cols], use_container_width=True, hide_index=True)
+            st.dataframe(df_runs[cols], width="stretch", hide_index=True)
         else:
-            st.info("No runs saved yet.")
+            render_empty_state("No runs saved yet", "Training and import activity will appear here after the first saved run.")
 
     with right:
-        st.markdown(
-            """
-            <div class="card">
-              <div class="card-title">
-                <div style="font-weight:800; font-size:1.05rem;">Quick actions</div>
-                <div class="subtle">Start training from here</div>
-              </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        render_section_header("Quick actions", "Start training from the current loaded data")
 
-        st.markdown("<div style='height:5px;'></div>", unsafe_allow_html=True)
-
-        if st.button("Run SVM Group CV", use_container_width=True, disabled=not tabular_ok):
+        if st.button("Run SVM Group CV", width="stretch", disabled=not tabular_ok):
             run_train_svm_group_cv()
 
-        if st.button("Run CNN Group CV", use_container_width=True, disabled=not raw_ok):
+        if st.button("Run CNN Group CV", width="stretch", disabled=not raw_ok):
             run_train_cnn_group_cv()
 
-        st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
+        spacer("sm")
 
-        if st.button("Open Raw EEG Viewer", use_container_width=True, disabled=not raw_ok):
+        if st.button("Open Raw EEG Viewer", width="stretch", disabled=not raw_ok):
             st.session_state.page = "Raw EEG Viewer"
             st.rerun()
 
-        st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
-
-        st.markdown(
-            """
-            <div class="card">
-              <div class="card-title">
-                <div style="font-weight:800; font-size:1.05rem;">Logs</div>
-                <div class="subtle">Execution messages</div>
-              </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        st.markdown("<div style='height:5px;'></div>", unsafe_allow_html=True)
+        spacer("lg")
+        render_section_header("Logs", "Execution messages")
 
         # collects last 200 logs
         logs_text = "\n".join(st.session_state.logs[-200:]) if st.session_state.logs else "No logs yet."
@@ -178,19 +148,10 @@ def render_dashboard():
 
 
 def render_import():
-    st.markdown(
-        """
-        <div class="card">
-          <div class="card-title">
-            <div style="font-weight:800; font-size:1.1rem;">Import datasets</div>
-              <div class="subtle">Use one import flow for raw EEG CNN and a separate one for CSV or MAT-based SVM models</div>
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    render_section_header(
+        "Import datasets",
+        "Use one import flow for raw EEG CNN and a separate one for CSV or MAT-based SVM models",
     )
-
-    st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
 
     col_left, col_right = st.columns(2, gap="large")
 
@@ -206,21 +167,23 @@ def render_import():
             f"""
             <div class="card">
               <div class="card-title">
-                <div style="font-weight:800; font-size:1.0rem;">Raw EEG import for CNN</div>
-                <div class="subtle">EEGLAB .set/.fdt files or BrainVision .vhdr/.eeg/.vmrk files</div>
+                <div>
+                  <div class="section-title">Raw EEG import for CNN</div>
+                  <div class="section-subtitle">EEGLAB .set/.fdt files or BrainVision .vhdr/.eeg/.vmrk files</div>
+                </div>
               </div>
-              <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">
-                <span class="pill">Status: <b style="color:var(--txt)">{'Loaded' if raw_loaded else 'Not loaded'}</b></span>
-                <span class="pill">Recordings: <b style="color:var(--txt)">{raw_recordings}</b></span>
-                <span class="pill">Subjects: <b style="color:var(--txt)">{raw_subjects}</b></span>
-                <span class="pill">Complete recordings: <b style="color:var(--txt)">{raw_complete}</b></span>
+              <div class="pill-row">
+                <span class="pill">Status: <b>{'Loaded' if raw_loaded else 'Not loaded'}</b></span>
+                <span class="pill">Recordings: <b>{raw_recordings}</b></span>
+                <span class="pill">Subjects: <b>{raw_subjects}</b></span>
+                <span class="pill">Complete recordings: <b>{raw_complete}</b></span>
               </div>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-        st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
+        spacer("sm")
 
         # for file upload
         uploaded_raw_files = st.file_uploader(
@@ -244,7 +207,7 @@ def render_import():
 
         if st.button(
             "Load raw EEG dataset",
-            use_container_width=True,
+            width="stretch",
             disabled=not uploaded_raw_files,
             key="load_raw_eeg_btn",
         ): #uploaded files are analyzed
@@ -286,18 +249,18 @@ def render_import():
 
         # data preview
         if st.session_state.raw_manifest_df is not None:
-            st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
+            spacer("md")
 
             with st.expander("Preview detected BrainVision recordings", expanded=True):
-                st.dataframe(st.session_state.raw_manifest_df, use_container_width=True, hide_index=True)
+                st.dataframe(st.session_state.raw_manifest_df, width="stretch", hide_index=True)
 
-            if st.button("Open Raw EEG Viewer", use_container_width=True, key="open_raw_viewer_from_import"):
+            if st.button("Open Raw EEG Viewer", width="stretch", key="open_raw_viewer_from_import"):
                 st.session_state.page = "Raw EEG Viewer"
                 st.rerun()
 
             if st.button(
                 "Generate SVM features from loaded raw EEG",
-                use_container_width=True,
+                width="stretch",
                 key="generate_svm_from_raw_eeg",
             ):
                 df_features, feature_summary, feature_err = load_brainvision_feature_table(
@@ -341,7 +304,7 @@ def render_import():
             ]
             if not incomplete_df.empty:
                 st.warning("Some recordings are incomplete and will not be usable.")
-                st.dataframe(incomplete_df, use_container_width=True, hide_index=True)
+                st.dataframe(incomplete_df, width="stretch", hide_index=True)
 
     # checks if svm data was uploaded and calculates nr of rows and feats
     with col_right:
@@ -356,20 +319,22 @@ def render_import():
             f"""
             <div class="card">
               <div class="card-title">
-                <div style="font-weight:800; font-size:1.0rem;">SVM dataset import</div>
-                <div class="subtle">Upload either a ready CSV or a supported EEG .mat file</div>
+                <div>
+                  <div class="section-title">SVM dataset import</div>
+                  <div class="section-subtitle">Upload either a ready CSV or a supported EEG .mat file</div>
+                </div>
               </div>
-              <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">
-                <span class="pill">Status: <b style="color:var(--txt)">{'Loaded' if svm_loaded else 'Not loaded'}</b></span>
-                <span class="pill">Rows: <b style="color:var(--txt)">{svm_rows}</b></span>
-                <span class="pill">Features: <b style="color:var(--txt)">{svm_features}</b></span>
+              <div class="pill-row">
+                <span class="pill">Status: <b>{'Loaded' if svm_loaded else 'Not loaded'}</b></span>
+                <span class="pill">Rows: <b>{svm_rows}</b></span>
+                <span class="pill">Features: <b>{svm_features}</b></span>
               </div>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-        st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
+        spacer("sm")
 
         svm_source = st.radio(
             "SVM source",
@@ -414,7 +379,7 @@ def render_import():
 
         if st.button(
             "Load SVM dataset",
-            use_container_width=True,
+            width="stretch",
             disabled=not can_load_svm,
             key="load_svm_btn",
         ): # uploaded files are analyzed
@@ -493,10 +458,10 @@ def render_import():
 
         # data preview
         if st.session_state.dataset_df is not None:
-            st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
+            spacer("md")
 
             with st.expander("Preview SVM dataset rows", expanded=True):
-                st.dataframe(st.session_state.dataset_df.head(20), use_container_width=True, hide_index=True)
+                st.dataframe(st.session_state.dataset_df.head(20), width="stretch", hide_index=True)
 
             st.caption(
                 "If you upload a .mat file, the saved preprocessing config is used to generate the tabular dataset."
@@ -504,19 +469,10 @@ def render_import():
 
 
 def render_preprocess():
-    st.markdown(
-        """
-        <div class="card">
-          <div class="card-title">
-            <div style="font-weight:800; font-size:1.05rem;">Preprocessing config</div>
-            <div class="subtle">Windowing + filtering settings used by Raw EEG CNN and MAT → SVM conversion</div>
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    render_section_header(
+        "Preprocessing config",
+        "Windowing + filtering settings used by Raw EEG CNN and MAT to SVM conversion",
     )
-
-    st.markdown("<div style='height:5px;'></div>", unsafe_allow_html=True)
 
     left, right = st.columns([1.0, 1.0], gap="large")
 
@@ -660,7 +616,7 @@ def render_preprocess():
         )
 
         # saves current config settings
-        if st.button("Save preprocessing config", use_container_width=True):
+        if st.button("Save preprocessing config", width="stretch"):
             new_summary = {
                 "window_sec": float(window_sec),
                 "step_sec": float(step_sec),
@@ -740,23 +696,17 @@ def render_preprocess():
             st.rerun()
 
     with right:
-        st.markdown(
-            """
-            <div class="card">
-              <div class="card-title">
-                <div style="font-weight:800; font-size:1.05rem;">Current config</div>
-                <div class="subtle">Used by Run CNN Group CV and by MAT → SVM feature generation</div>
-              </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
+        render_section_header(
+            "Current config",
+            "Used by Run CNN Group CV and by MAT to SVM feature generation",
         )
-
-        st.markdown("<div style='height:5px;'></div>", unsafe_allow_html=True)
 
         # shows saved config
         if st.session_state.preprocessing_summary is None:
-            st.info("No preprocessing config saved yet.")
+            render_empty_state(
+                "No preprocessing config saved yet",
+                "The default preprocessing values are active until you save a custom configuration.",
+            )
         else:
             st.json(st.session_state.preprocessing_summary)
 
@@ -780,25 +730,14 @@ def render_results():
     metrics = st.session_state.last_metrics or {}
     last_action = st.session_state.last_action
 
-    st.markdown(
-        f"""
-        <div class="card">
-          <div class="card-title">
-            <div>
-              <div style="font-weight:800; font-size:1.05rem;">Evaluation and model comparison</div>
-              <div class="subtle">Metrics, visualizations, diagnostics and traceability</div>
-            </div>
-            <div class="pill">Model: {model_name}</div>
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    render_section_header(
+        "Evaluation and model comparison",
+        "Metrics, visualizations, diagnostics and traceability",
+        aside=f'<div class="pill">Model: <b>{escape_html(model_name)}</b></div>',
     )
 
-    st.markdown("<div style='height:5px;'></div>", unsafe_allow_html=True)
-
     if not metrics:
-        st.info("No metrics yet. Train a model first.")
+        render_empty_state("No metrics yet", "Train a model first to populate evaluation metrics and diagnostics.")
         return
 
     def fmt_value(value, digits=3):
@@ -817,16 +756,7 @@ def render_results():
         return "PD" if int(value) == 1 else "HC"
 
     def metric_table(rows):
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-
-    def escape_html(value):
-        return (
-            str(value)
-            .replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-            .replace('"', "&quot;")
-        )
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
     metric_help = {
         "accuracy": "Share of samples classified correctly.",
@@ -1008,25 +938,25 @@ def render_results():
                     st.markdown("**Subject-level confusion matrix**")
                     plot_cm(st.session_state.last_cm_subject, title="Subject-level Confusion Matrix")
                 else:
-                    st.info("Subject-level confusion matrix not available yet.")
+                    render_empty_state("No subject-level matrix", "Run Group CV to populate this visualization.")
             with viz2:
                 if st.session_state.last_cm_window is not None:
                     st.markdown("**Window-level confusion matrix**")
                     plot_cm(st.session_state.last_cm_window, title="Window-level Confusion Matrix")
                 else:
-                    st.info("Window-level confusion matrix not available yet.")
+                    render_empty_state("No window-level matrix", "Run Group CV to populate this visualization.")
         else:
             viz1, viz2 = st.columns(2, gap="large")
             with viz1:
                 if st.session_state.last_cm is not None:
                     plot_cm(st.session_state.last_cm)
                 else:
-                    st.info("Confusion matrix not available yet.")
+                    render_empty_state("No confusion matrix", "Train a model to populate this visualization.")
             with viz2:
                 if st.session_state.last_roc is not None:
                     plot_roc(st.session_state.last_roc)
                 else:
-                    st.info("ROC curve not available yet.")
+                    render_empty_state("No ROC curve", "Train a model with probability output to populate this visualization.")
 
     def render_diagnostics():
         if last_action == "cnn":
@@ -1061,15 +991,15 @@ def render_results():
             elif leakage_detected is True:
                 st.error("Subject leakage detected.")
             else:
-                st.info("Subject leakage check not available for this run.")
+                render_empty_state("Leakage check unavailable", "This run did not include subject leakage diagnostics.")
         else:
-            st.info("No extra diagnostics are available for this run.")
+            render_empty_state("No extra diagnostics", "Additional diagnostic cards appear for supported model runs.")
 
     def render_fold_details():
         fold_details = metrics.get("fold_details", [])
         if fold_details:
             st.markdown("**Fold details**")
-            st.dataframe(pd.DataFrame(fold_details), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(fold_details), width="stretch", hide_index=True)
         elif last_action == "cnn":
             st.markdown("**Subject split check**")
             leakage_detected = metrics.get("subject_leakage_detected", None)
@@ -1078,16 +1008,16 @@ def render_results():
             elif leakage_detected is True:
                 st.error("Subject leakage detected.")
             else:
-                st.info("Subject leakage check not available for this run.")
-            st.dataframe(pd.DataFrame(split_summary_rows()), use_container_width=True, hide_index=True)
+                render_empty_state("Leakage check unavailable", "This run did not include subject leakage diagnostics.")
+            st.dataframe(pd.DataFrame(split_summary_rows()), width="stretch", hide_index=True)
         else:
-            st.info("Fold details are available after running Group CV.")
+            render_empty_state("No fold details", "Fold tables are available after running Group CV.")
 
     def render_sample_prediction():
         if last_action == "cnn":
             pred_df = st.session_state.raw_cnn_predictions
             if pred_df is None or pred_df.empty:
-                st.info("Sample prediction is available after a CNN run.")
+                render_empty_state("No sample prediction", "Sample-level prediction details are available after a CNN run.")
                 return
 
             sample_idx = st.number_input(
@@ -1115,7 +1045,7 @@ def render_results():
             df = st.session_state.dataset_df
             model = st.session_state.last_model
             if df is None or model is None:
-                st.info("Sample prediction is available after an SVM run.")
+                render_empty_state("No sample prediction", "Sample-level prediction details are available after an SVM run.")
                 return
 
             try:
@@ -1158,7 +1088,7 @@ def render_results():
         elif last_action in ["svm_group_cv", "cnn_group_cv"]:
             pred_df = st.session_state.last_group_cv_predictions
             if pred_df is None or pred_df.empty:
-                st.info("Sample prediction is available after running Group CV.")
+                render_empty_state("No sample prediction", "Sample-level prediction details are available after running Group CV.")
                 return
 
             sample_idx = st.number_input(
@@ -1183,10 +1113,10 @@ def render_results():
                 "true_label": true_label,
             }])
         else:
-            st.info("Train a model first.")
+            render_empty_state("No trained model", "Train a model first to inspect sample predictions.")
             return
 
-        st.dataframe(info_df, use_container_width=True, hide_index=True)
+        st.dataframe(info_df, width="stretch", hide_index=True)
         c1, c2, c3 = st.columns(3)
         with c1:
             st.metric("True label", true_label, help="Ground-truth class for the selected sample or subject.")
@@ -1209,7 +1139,7 @@ def render_results():
     def render_export():
         runs = load_runs(limit=1)
         if not runs:
-            st.info("No run record to export yet.")
+            render_empty_state("No run record", "Export becomes available after the first saved run.")
             return
 
         last = runs[0]
@@ -1220,7 +1150,7 @@ def render_results():
             data=payload,
             file_name=f"run_{last.get('run_id','latest')}.json",
             mime="application/json",
-            use_container_width=True,
+            width="stretch",
         )
 
     if "error" in metrics:
@@ -1241,7 +1171,7 @@ def render_results():
     )
     render_metric_row(summary_specs)
 
-    st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
+    spacer("sm")
     render_metadata()
 
     overview_tab, viz_tab, diagnostics_tab, folds_tab, sample_tab, export_tab = st.tabs([
@@ -1276,25 +1206,14 @@ def render_results():
 
 
 def render_raw_viewer():
-    st.markdown(
-        """
-        <div class="card">
-          <div class="card-title">
-            <div>
-              <div style="font-weight:800; font-size:1.1rem;">Preprocessed EEG signal viewer</div>
-              <div class="subtle">Visual inspection after applying the saved preprocessing configuration</div>
-            </div>
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    render_section_header(
+        "Preprocessed EEG signal viewer",
+        "Visual inspection after applying the saved preprocessing configuration",
     )
 
-    st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
-
     if st.session_state.raw_manifest_df is None or not st.session_state.raw_file_payloads: # checks if raw eeg data was loaded
-        st.info("Load a raw EEG dataset first from the Import page.")
-        if st.button("Go to Import", use_container_width=False):
+        render_empty_state("No raw EEG dataset loaded", "Load a raw EEG dataset first from the Import page.")
+        if st.button("Go to Import", width="content"):
             st.session_state.page = "Import"
             st.rerun()
         return
@@ -1357,27 +1276,29 @@ def render_raw_viewer():
             f"""
             <div class="card">
               <div class="card-title">
-                <div style="font-weight:800; font-size:1.0rem;">Recording summary</div>
-                <div class="subtle">{summary['recording']}</div>
+                <div>
+                  <div class="section-title">Recording summary</div>
+                  <div class="section-subtitle">{escape_html(summary['recording'])}</div>
+                </div>
               </div>
-              <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">
-                <span class="pill">Channels: <b style="color:var(--txt)">{summary['n_channels']}</b></span>
-                <span class="pill">Samples: <b style="color:var(--txt)">{summary['n_samples']}</b></span>
-                <span class="pill">Sampling rate: <b style="color:var(--txt)">{summary['sampling_rate']:.2f} Hz</b></span>
-                <span class="pill">Displayed duration: <b style="color:var(--txt)">{summary['duration_sec']:.2f} s</b></span>
+              <div class="pill-row">
+                <span class="pill">Channels: <b>{summary['n_channels']}</b></span>
+                <span class="pill">Samples: <b>{summary['n_samples']}</b></span>
+                <span class="pill">Sampling rate: <b>{summary['sampling_rate']:.2f} Hz</b></span>
+                <span class="pill">Displayed duration: <b>{summary['duration_sec']:.2f} s</b></span>
               </div>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-        st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
+        spacer("md")
         preview_cols = [
             c for c in ["recording", "source_format", "subject_key", "label_guess", "label_source"]
             if c in complete_df.columns
         ]
         preview_df = complete_df[preview_cols].copy()
-        st.dataframe(preview_df, use_container_width=True, hide_index=True)
+        st.dataframe(preview_df, width="stretch", hide_index=True)
 
     with right:
         import matplotlib.pyplot as plt
@@ -1409,19 +1330,34 @@ def render_raw_viewer():
             if scale == 0:
                 scale = 1.0
 
-            fig = plt.figure(figsize=(12, 7))
+            fig, ax = plt.subplots(figsize=(12, 7), facecolor="#0d121a")
+            ax.set_facecolor("#111923")
             spacing = 3.0
+            palette = ["#4fd1c5", "#74a8ff", "#8bd450", "#f6c35f", "#b49cff", "#ff8aa0"]
 
             for plot_idx, channel_name in enumerate(selected_channels):
                 signal = selected_data[plot_idx] / scale # divides by scale
                 offset = (len(selected_channels) - 1 - plot_idx) * spacing # vertical offset
-                plt.plot(times, signal + offset, linewidth=0.9) # upward or downward shift
-                plt.text(times[0] if len(times) else 0, offset, channel_name, va="bottom", ha="left")
+                color = palette[plot_idx % len(palette)]
+                ax.plot(times, signal + offset, linewidth=0.95, color=color) # upward or downward shift
+                ax.text(
+                    times[0] if len(times) else 0,
+                    offset,
+                    channel_name,
+                    va="bottom",
+                    ha="left",
+                    color="#edf4fb",
+                    fontsize=9,
+                )
 
-            plt.title(f"Preprocessed EEG signals - {selected_recording}")
-            plt.xlabel("Time (s)")
-            plt.yticks([])
-            plt.grid(True, alpha=0.25)
+            ax.set_title(f"Preprocessed EEG signals - {selected_recording}", color="#edf4fb", pad=14, fontweight="bold")
+            ax.set_xlabel("Time (s)", color="#b9c7d6")
+            ax.set_yticks([])
+            ax.grid(True, alpha=0.35, color="#263242", linewidth=0.8)
+            ax.tick_params(colors="#b9c7d6")
+            for spine in ax.spines.values():
+                spine.set_color("#2a3748")
+            fig.tight_layout()
             st.pyplot(fig, clear_figure=True)
         else:
             try:
@@ -1464,6 +1400,7 @@ def render_raw_viewer():
                     len(selected_channels),
                     1,
                     figsize=(12, max(3.2, 2.25 * len(selected_channels))),
+                    facecolor="#0d121a",
                     sharex=True,
                     squeeze=False,
                 )
@@ -1471,6 +1408,7 @@ def render_raw_viewer():
                 last_mesh = None
                 for plot_idx, channel_name in enumerate(selected_channels):
                     ax = axes[plot_idx, 0]
+                    ax.set_facecolor("#111923")
                     last_mesh = ax.pcolormesh(
                         spec_times,
                         freqs,
@@ -1478,15 +1416,26 @@ def render_raw_viewer():
                         shading="auto",
                         vmin=vmin,
                         vmax=vmax,
+                        cmap="magma",
                     )
-                    ax.set_ylabel(f"{channel_name}\nHz")
+                    ax.set_ylabel(f"{channel_name}\nHz", color="#b9c7d6")
+                    ax.tick_params(colors="#b9c7d6")
+                    for spine in ax.spines.values():
+                        spine.set_color("#2a3748")
                     ax.grid(False)
 
-                axes[-1, 0].set_xlabel("Time (s)")
-                spec_fig.suptitle(f"Channel spectrograms - {selected_recording}")
+                axes[-1, 0].set_xlabel("Time (s)", color="#b9c7d6")
+                spec_fig.suptitle(
+                    f"Channel spectrograms - {selected_recording}",
+                    color="#edf4fb",
+                    fontweight="bold",
+                )
                 spec_fig.tight_layout()
                 if last_mesh is not None:
-                    spec_fig.colorbar(last_mesh, ax=axes[:, 0], label="Power (dB)", shrink=0.92)
+                    cbar = spec_fig.colorbar(last_mesh, ax=axes[:, 0], label="Power (dB)", shrink=0.92)
+                    cbar.ax.yaxis.set_tick_params(color="#b9c7d6")
+                    cbar.ax.yaxis.label.set_color("#b9c7d6")
+                    plt.setp(cbar.ax.get_yticklabels(), color="#b9c7d6")
                 st.pyplot(spec_fig, clear_figure=True)
 
             except Exception as e:
@@ -1497,6 +1446,6 @@ def render_raw_viewer():
             raw_table[channel_name] = data[channel_to_idx[channel_name]]
         raw_table_df = pd.DataFrame(raw_table)
 
-        st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
+        spacer("md")
         with st.expander("Preview signal values", expanded=False):
-            st.dataframe(raw_table_df.head(300), use_container_width=True, hide_index=True)
+            st.dataframe(raw_table_df.head(300), width="stretch", hide_index=True)

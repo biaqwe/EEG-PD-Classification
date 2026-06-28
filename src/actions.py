@@ -1,6 +1,7 @@
 import streamlit as st
 
-from src.ml_models import train_svm, train_svm_group_cv, train_raw_eeg_cnn
+from src.ml_models import train_svm, train_svm_group_cv
+from src.simple_cnn import train_raw_eeg_simple_cnn
 from src.cnn_group_cv import train_raw_eeg_cnn_group_cv
 from src.state import set_status, log
 from src.storage import save_run
@@ -126,8 +127,8 @@ def run_train_cnn():
     st.session_state.last_action = "cnn"
     log("Training spectrogram CNN started.", now_iso)
 
-    # calls cnn training func using loaded data
-    metrics, cm, roc, model, pred_df, err = train_raw_eeg_cnn(
+    # calls simple cnn training func using loaded data
+    metrics, cm, roc, model, pred_df, err = train_raw_eeg_simple_cnn(
         payloads=st.session_state.raw_file_payloads,
         config=st.session_state.preprocessing_summary,
     )

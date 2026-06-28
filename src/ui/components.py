@@ -10,6 +10,58 @@ except Exception:
     MPL_OK = False
 
 
+def escape_html(value):
+    return (
+        str(value)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+def spacer(size: str = "md"):
+    allowed = {"xs", "sm", "md", "lg"}
+    safe_size = size if size in allowed else "md"
+    st.markdown(f"<div class='spacer-{safe_size}'></div>", unsafe_allow_html=True)
+
+
+def render_section_header(title: str, subtitle: str | None = None, aside: str | None = None):
+    subtitle_html = f'<div class="section-subtitle">{escape_html(subtitle)}</div>' if subtitle else ""
+    aside_html = f'<div class="section-aside">{aside}</div>' if aside else ""
+    st.markdown(
+        f"""
+        <div class="section-heading">
+          <div>
+            <div class="section-title">{escape_html(title)}</div>
+            {subtitle_html}
+          </div>
+          {aside_html}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_empty_state(title: str, message: str, tone: str = "info"):
+    tone_cls = {
+        "info": "empty-info",
+        "warn": "empty-warn",
+        "error": "empty-error",
+        "success": "empty-success",
+    }.get(tone, "empty-info")
+
+    st.markdown(
+        f"""
+        <div class="empty-state {tone_cls}">
+          <div class="empty-title">{escape_html(title)}</div>
+          <div class="empty-copy">{escape_html(message)}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def badge(text: str, tone: str):
     tone_map = {
         "idle": "badge badge-idle",
@@ -96,14 +148,14 @@ def render_topbar():
 
     main_html = (
         "<div>"
-        '<h2 style="margin:0; padding:0;">EEG-Based Parkinson&#39;s Classification</h2>'
-        '<div class="subtle" style="margin-top:2px;">'
+        '<h2 class="app-title">EEG-Based Parkinson&#39;s Classification</h2>'
+        '<div class="app-subtitle">'
         "Signal analysis and model evaluation for Parkinson's vs healthy control EEG data"
         "</div>"
-        '<div style="margin-top:10px; display:flex; gap:10px; flex-wrap:wrap;">'
-        f'<span class="pill">Dataset: <b style="color:var(--txt)">{ds_name}</b></span>'
-        f'<span class="pill">Rows/Recordings: <b style="color:var(--txt)">{n_rows if n_rows is not None else "-"}</b></span>'
-        f'<span class="pill">Channels/Features: <b style="color:var(--txt)">{n_channels if n_channels is not None else "-"}</b></span>'
+        '<div class="pill-row">'
+        f'<span class="pill">Dataset: <b>{escape_html(ds_name)}</b></span>'
+        f'<span class="pill">Rows/Recordings: <b>{escape_html(n_rows if n_rows is not None else "-")}</b></span>'
+        f'<span class="pill">Channels/Features: <b>{escape_html(n_channels if n_channels is not None else "-")}</b></span>'
         f'<span class="pill">Status: {status_badge()}</span>'
         "</div>"
         "</div>"
@@ -126,16 +178,24 @@ def plot_cm(cm, title="Confusion Matrix"):
         return
 
     arr = np.array(cm, dtype=float)
-    fig = plt.figure(figsize=(5.2, 4.0))
-    plt.imshow(arr, interpolation="nearest")
-    plt.title(title)
-    plt.xlabel("Predicted")
-    plt.ylabel("True")
+    fig, ax = plt.subplots(figsize=(5.2, 4.0), facecolor="#0d121a")
+    ax.set_facecolor("#111923")
+    image = ax.imshow(arr, interpolation="nearest", cmap="mako" if "mako" in plt.colormaps() else "viridis")
+    ax.set_title(title, color="#edf4fb", pad=14, fontweight="bold")
+    ax.set_xlabel("Predicted", color="#b9c7d6")
+    ax.set_ylabel("True", color="#b9c7d6")
+    ax.tick_params(colors="#b9c7d6")
+    for spine in ax.spines.values():
+        spine.set_color("#2a3748")
 
     for i in range(arr.shape[0]):
         for j in range(arr.shape[1]):
-            plt.text(j, i, int(arr[i, j]), ha="center", va="center")
+            ax.text(j, i, int(arr[i, j]), ha="center", va="center", color="#f8fbff", fontweight="bold")
 
+    cbar = fig.colorbar(image, ax=ax, fraction=0.046, pad=0.04)
+    cbar.ax.yaxis.set_tick_params(color="#b9c7d6")
+    plt.setp(cbar.ax.get_yticklabels(), color="#b9c7d6")
+    fig.tight_layout()
     st.pyplot(fig, clear_figure=True)
 
 
@@ -146,10 +206,16 @@ def plot_roc(roc):
     fpr = np.array(roc["fpr"], dtype=float)
     tpr = np.array(roc["tpr"], dtype=float)
 
-    fig = plt.figure(figsize=(5.2, 4.0))
-    plt.plot(fpr, tpr)
-    plt.plot([0, 1], [0, 1], linestyle="--")
-    plt.xlabel("False Positive Rate")
-    plt.ylabel("True Positive Rate")
-    plt.title("ROC Curve")
+    fig, ax = plt.subplots(figsize=(5.2, 4.0), facecolor="#0d121a")
+    ax.set_facecolor("#111923")
+    ax.plot(fpr, tpr, color="#4fd1c5", linewidth=2.4)
+    ax.plot([0, 1], [0, 1], linestyle="--", color="#7f8ea3", linewidth=1.2)
+    ax.set_xlabel("False Positive Rate", color="#b9c7d6")
+    ax.set_ylabel("True Positive Rate", color="#b9c7d6")
+    ax.set_title("ROC Curve", color="#edf4fb", pad=14, fontweight="bold")
+    ax.grid(True, color="#263242", alpha=0.6, linewidth=0.8)
+    ax.tick_params(colors="#b9c7d6")
+    for spine in ax.spines.values():
+        spine.set_color("#2a3748")
+    fig.tight_layout()
     st.pyplot(fig, clear_figure=True)
